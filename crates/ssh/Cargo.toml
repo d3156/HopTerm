@@ -1,0 +1,15 @@
+[package]
+name = "hopterm-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "russh-based SSH transport + multi-hop chain builder for HopTerm (spec §5.1, §5.2)."
+
+[dependencies]
+hopterm-domain = { workspace = true }
+hopterm-transfer = { workspace = true }
+russh = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,21 @@
+[package]
+name = "hopterm-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Orchestration layer: session manager, service wiring, offline mock (spec §7.1.2)."
+
+[dependencies]
+hopterm-domain = { workspace = true }
+hopterm-ssh = { workspace = true }
+hopterm-terminal = { workspace = true }
+hopterm-transfer = { workspace = true }
+hopterm-storage = { workspace = true }
+hopterm-security = { workspace = true }
+hopterm-logging = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "hopterm-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "alacritty_terminal-backed VT/ANSI engine for HopTerm (spec §5.3)."
+
+[dependencies]
+hopterm-domain = { workspace = true }
+alacritty_terminal = { workspace = true }

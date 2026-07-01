@@ -1,0 +1,13 @@
+[package]
+name = "hopterm-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Domain entities and inter-layer traits for HopTerm (pure, IO-free)."
+
+[dependencies]
+serde = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }

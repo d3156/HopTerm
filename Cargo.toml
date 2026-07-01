@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/logging",
+    "crates/storage",
+    "crates/security",
+    "crates/ssh",
+    "crates/terminal",
+    "crates/transfer",
+    "crates/app",
+    "crates/ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+authors = ["HopTerm contributors"]
+repository = "https://example.com/hopterm"
+
+[workspace.dependencies]
+# Internal crates
+hopterm-domain = { path = "crates/domain" }
+hopterm-logging = { path = "crates/logging" }
+hopterm-storage = { path = "crates/storage" }
+hopterm-security = { path = "crates/security" }
+hopterm-ssh = { path = "crates/ssh" }
+hopterm-terminal = { path = "crates/terminal" }
+hopterm-transfer = { path = "crates/transfer" }
+hopterm-app = { path = "crates/app" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+sha2 = "0.11"
+base64 = "0.22"
+
+# SSH / terminal / transfer
+russh = "0.61"
+russh-sftp = "2.3"
+alacritty_terminal = "0.26"
+
+# GUI
+iced = { version = "0.13", features = ["tokio", "advanced", "image", "svg", "lazy"] }
+rfd = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

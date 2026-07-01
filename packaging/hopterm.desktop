@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HopTerm
+GenericName=SSH Terminal Manager
+Comment=Многохоповый SSH-терминал, менеджер хостов и передач файлов
+Exec=hopterm
+TryExec=hopterm
+Icon=hopterm
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;sftp;terminal;remote;hop;jump;tunnel;терминал;
+StartupNotify=true
+StartupWMClass=hopterm

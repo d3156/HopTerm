@@ -1,0 +1,1824 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HopTerm</title>
+<link rel="stylesheet" href="hop://app/vendor/xterm.css">
+<script src="hop://app/vendor/xterm.js"></script>
+<script src="hop://app/vendor/addon-fit.js"></script>
+<style>
+@font-face { font-family: 'Inter'; font-weight: 400; src: url('hop://app/vendor/Inter-Regular.ttf'); }
+@font-face { font-family: 'Inter'; font-weight: 600; src: url('hop://app/vendor/Inter-SemiBold.ttf'); }
+@font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: url('hop://app/vendor/JetBrainsMono-Regular.ttf'); }
+::selection { background: #4db3bf; color: #11100c; }
+#view-terminal.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#view-terminal .content { background: #161513; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.term-tabs { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; }
+.term-tab { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: var(--radius-md); font-size: var(--text-xs); color: var(--color-text-muted); background: var(--color-surface-offset); border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+.term-tab.active { color: var(--color-primary); background: var(--color-primary-highlight); border-color: transparent; }
+.term-tab .tdot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-faint); }
+.term-tab.live .tdot { background: var(--color-success); }
+.term-tab .tclose { opacity: .6; font-size: 14px; line-height: 1; }
+.term-tab .tclose:hover { opacity: 1; color: var(--color-notification); }
+#terms { flex: 1; min-height: 0; position: relative; }
+.term-pane { width: 100%; height: 100%; display: none; padding: 8px 10px; box-sizing: border-box; }
+.term-pane.active { display: block; }
+.sftp-list { display: flex; flex-direction: column; max-height: 46vh; overflow-y: auto; }
+.sftp-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-md); cursor: pointer; }
+.sftp-row:hover { background: var(--color-surface-offset); }
+.sftp-row svg { width: 15px; height: 15px; stroke: var(--color-text-muted); fill: none; stroke-width: 1.8; flex-shrink: 0; }
+.sftp-row.dir svg { stroke: var(--color-primary); }
+.sftp-row .sname { flex: 1; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--color-text); }
+.sftp-row .ssize { color: var(--color-text-muted); font-size: var(--text-xs); }
+.sftp-row .sdl { opacity: 0; color: var(--color-primary); font-size: var(--text-xs); }
+.sftp-row:hover .sdl { opacity: 1; }
+.xfer-item { padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); margin-bottom: 10px; background: var(--color-surface); }
+.xfer-bar-bg { height: 6px; background: var(--color-surface-dynamic); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+.xfer-bar { height: 100%; background: var(--color-primary); border-radius: 3px; transition: width .2s; }
+.xfer-bar.done { background: var(--color-success); }
+.xfer-bar.error { background: var(--color-notification); }
+.xterm-viewport::-webkit-scrollbar { width: 10px; }
+.xterm-viewport::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 5px; }
+/* ===================== DESIGN TOKENS ===================== */
+:root, [data-theme="light"] {
+  --color-bg: #f5f4f0;
+  --color-surface: #f9f8f5;
+  --color-surface-2: #ffffff;
+  --color-surface-offset: #eeeceb;
+  --color-surface-dynamic: #e6e4df;
+  --color-divider: #dcd9d5;
+  --color-border: #d0cdc7;
+  --color-text: #1e1c17;
+  --color-text-muted: #6b6a66;
+  --color-text-faint: #b0afab;
+  --color-text-inverse: #f9f8f4;
+  --color-primary: #01696f;
+  --color-primary-hover: #0c4e54;
+  --color-primary-highlight: #cedcd8;
+  --color-warning: #964219;
+  --color-error: #a12c7b;
+  --color-success: #437a22;
+  --color-blue: #006494;
+  --color-orange: #da7101;
+  --color-gold: #d19900;
+  --color-notification: #a13544;
+  --shadow-sm: 0 1px 2px oklch(0.2 0.01 80 / 0.06);
+  --shadow-md: 0 4px 12px oklch(0.2 0.01 80 / 0.08);
+  --shadow-lg: 0 12px 32px oklch(0.2 0.01 80 / 0.12);
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --text-xs: clamp(0.75rem, 0.7rem + 0.25vw, 0.875rem);
+  --text-sm: clamp(0.875rem, 0.8rem + 0.35vw, 1rem);
+  --text-base: clamp(1rem, 0.95rem + 0.25vw, 1.125rem);
+  --text-lg: clamp(1.125rem, 1rem + 0.75vw, 1.5rem);
+  --text-xl: clamp(1.5rem, 1.2rem + 1.25vw, 2.25rem);
+  --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem; --space-4: 1rem;
+  --space-5: 1.25rem; --space-6: 1.5rem; --space-8: 2rem; --space-10: 2.5rem;
+  --space-12: 3rem; --space-16: 4rem;
+  --transition: 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="dark"] {
+  --color-bg: #0f0e0d;
+  --color-surface: #161513;
+  --color-surface-2: #1c1b19;
+  --color-surface-offset: #201f1d;
+  --color-surface-dynamic: #2a2926;
+  --color-divider: #252422;
+  --color-border: #333230;
+  --color-text: #d0cfc8;
+  --color-text-muted: #706f6c;
+  --color-text-faint: #4a4946;
+  --color-text-inverse: #2b2a28;
+  --color-primary: #3d9da8;
+  --color-primary-hover: #2a8a95;
+  --color-primary-highlight: #1e3335;
+  --color-warning: #c26830;
+  --color-error: #c85aa0;
+  --color-success: #5fa030;
+  --color-blue: #4488c0;
+  --color-orange: #e08830;
+  --color-gold: #d4a020;
+  --color-notification: #cc4455;
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.25);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 0.35);
+  --shadow-lg: 0 12px 32px oklch(0 0 0 / 0.45);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
+body {
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+button { cursor: pointer; background: none; border: none; font: inherit; color: inherit; }
+input, textarea, select { font: inherit; color: inherit; background: none; }
+:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+/* ===================== LAYOUT ===================== */
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+/* SIDEBAR */
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-divider);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-divider);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.logo {
+  display: flex; align-items: center; gap: var(--space-2);
+  flex: 1; min-width: 0;
+}
+.logo-icon {
+  width: 28px; height: 28px; border-radius: var(--radius-md);
+  background: var(--color-primary);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.logo-icon svg { width: 16px; height: 16px; stroke: #fff; fill: none; }
+.logo-text { font-weight: 600; font-size: var(--text-sm); letter-spacing: -0.01em; }
+.theme-toggle {
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  transition: color var(--transition), background var(--transition);
+}
+.theme-toggle:hover { color: var(--color-text); background: var(--color-surface-offset); }
+
+.sidebar-nav { flex: 1; overflow-y: auto; padding: var(--space-3) var(--space-2); }
+.nav-section { margin-bottom: var(--space-4); }
+.nav-section-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: var(--space-1) var(--space-2);
+  margin-bottom: var(--space-1);
+}
+.nav-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+  font-size: var(--text-sm);
+  user-select: none;
+}
+.nav-item:hover { color: var(--color-text); background: var(--color-surface-offset); }
+.nav-item.active { color: var(--color-primary); background: var(--color-primary-highlight); font-weight: 500; }
+.nav-item svg { width: 15px; height: 15px; flex-shrink: 0; stroke: currentColor; fill: none; }
+.nav-item-badge {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  background: var(--color-primary-highlight);
+  color: var(--color-primary);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+}
+.nav-host {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-6);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.nav-host:hover { color: var(--color-text); background: var(--color-surface-offset); }
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+}
+.status-dot.online { background: var(--color-success); }
+.status-dot.offline { background: var(--color-text-faint); }
+.sidebar-footer {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-divider);
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+/* MAIN CONTENT */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  padding: var(--space-3) var(--space-6);
+  border-bottom: 1px solid var(--color-divider);
+  display: flex; align-items: center; gap: var(--space-4);
+  background: var(--color-surface);
+  flex-shrink: 0;
+}
+.topbar-title { font-weight: 600; font-size: var(--text-base); flex: 1; }
+.btn {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; flex-shrink: 0; }
+.btn-primary { background: var(--color-primary); color: #fff; border: 1px solid transparent; }
+.btn-primary:hover { background: var(--color-primary-hover); }
+.btn-ghost {
+  background: transparent; color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+}
+.btn-ghost:hover { color: var(--color-text); background: var(--color-surface-offset); }
+.btn-danger { background: transparent; color: var(--color-notification); border: 1px solid var(--color-border); }
+.btn-danger:hover { background: color-mix(in oklch, var(--color-notification) 10%, var(--color-surface)); }
+.btn-sm { padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
+
+.content { flex: 1; overflow-y: auto; padding: var(--space-6); }
+
+/* ===================== TABS ===================== */
+.tabs { display: flex; border-bottom: 1px solid var(--color-divider); margin-bottom: var(--space-6); }
+.tab {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.tab:hover { color: var(--color-text); }
+.tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 500; }
+
+/* ===================== CARDS ===================== */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.card-header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-divider);
+  display: flex; align-items: center; gap: var(--space-3);
+}
+.card-title { font-weight: 600; font-size: var(--text-sm); }
+.card-body { padding: var(--space-5); }
+.card-footer {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--color-divider);
+  display: flex; justify-content: flex-end; gap: var(--space-3);
+}
+
+/* ===================== FORM ELEMENTS ===================== */
+.form-group { margin-bottom: var(--space-4); }
+.form-label {
+  display: block;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-2);
+}
+.form-label .required { color: var(--color-notification); margin-left: 2px; }
+.form-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.form-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-primary) 15%, transparent); }
+.form-input::placeholder { color: var(--color-text-faint); }
+.form-input-mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+.form-hint { font-size: var(--text-xs); color: var(--color-text-faint); margin-top: var(--space-1); }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
+.form-row-3 { display: grid; grid-template-columns: 2fr 1fr 2fr; gap: var(--space-3); }
+
+.form-select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+  cursor: pointer;
+}
+.form-select:focus { outline: none; border-color: var(--color-primary); }
+
+/* ===================== HOP BUILDER ===================== */
+.hop-list { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-3); }
+.hop-item {
+  background: var(--color-surface-offset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+.hop-item-header {
+  display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3);
+}
+.hop-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  background: var(--color-primary-highlight);
+  color: var(--color-primary);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.hop-badge.final { background: color-mix(in oklch, var(--color-success) 15%, transparent); color: var(--color-success); }
+.hop-label { font-size: var(--text-xs); font-weight: 600; color: var(--color-text-muted); flex: 1; }
+.hop-remove {
+  color: var(--color-text-faint);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition);
+}
+.hop-remove:hover { color: var(--color-notification); }
+.hop-remove svg { width: 13px; height: 13px; stroke: currentColor; fill: none; }
+
+.hop-chain {
+  display: flex; align-items: center; gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-offset);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  margin-top: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.hop-node {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  color: var(--color-text-muted);
+}
+.hop-node.final { border-color: var(--color-primary); color: var(--color-primary); }
+.hop-arrow { color: var(--color-text-faint); }
+
+/* ===================== HOST LIST ===================== */
+.host-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: var(--space-4); }
+.host-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  cursor: pointer;
+  transition: box-shadow var(--transition), border-color var(--transition);
+  position: relative;
+}
+.host-card:hover { border-color: var(--color-primary); box-shadow: var(--shadow-md); }
+.host-card-top { display: flex; align-items: flex-start; gap: var(--space-3); margin-bottom: var(--space-3); }
+.host-icon {
+  width: 36px; height: 36px;
+  background: var(--color-primary-highlight);
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.host-icon svg { width: 18px; height: 18px; stroke: var(--color-primary); fill: none; }
+.host-info { flex: 1; min-width: 0; }
+.host-name { font-weight: 600; font-size: var(--text-sm); margin-bottom: 2px; }
+.host-address { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); }
+.host-meta {
+  display: flex; align-items: center; gap: var(--space-3);
+  font-size: var(--text-xs); color: var(--color-text-faint);
+  border-top: 1px solid var(--color-divider);
+  padding-top: var(--space-3);
+}
+.host-meta-item { display: flex; align-items: center; gap: var(--space-1); }
+.host-meta-item svg { width: 11px; height: 11px; stroke: currentColor; fill: none; }
+.host-actions {
+  position: absolute; top: var(--space-3); right: var(--space-3);
+  display: flex; gap: var(--space-1); opacity: 0;
+  transition: opacity var(--transition);
+}
+.host-card:hover .host-actions { opacity: 1; }
+.icon-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  transition: all var(--transition);
+}
+.icon-btn:hover { color: var(--color-text); background: var(--color-surface-offset); }
+.icon-btn svg { width: 13px; height: 13px; stroke: currentColor; fill: none; }
+
+/* ===================== COMMAND BUILDER ===================== */
+.cmd-list { display: flex; flex-direction: column; gap: var(--space-3); }
+.cmd-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.cmd-card-header {
+  padding: var(--space-3) var(--space-4);
+  display: flex; align-items: center; gap: var(--space-3);
+  cursor: pointer;
+}
+.cmd-type-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.cmd-type-download { background: color-mix(in oklch, var(--color-blue) 12%, transparent); color: var(--color-blue); }
+.cmd-type-upload { background: color-mix(in oklch, var(--color-orange) 12%, transparent); color: var(--color-orange); }
+.cmd-type-exec { background: color-mix(in oklch, var(--color-success) 12%, transparent); color: var(--color-success); }
+.cmd-name { font-weight: 600; font-size: var(--text-sm); flex: 1; }
+.cmd-host-tag {
+  font-size: var(--text-xs); color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+.cmd-body {
+  padding: var(--space-4);
+  border-top: 1px solid var(--color-divider);
+  background: var(--color-surface-offset);
+}
+.cmd-preview {
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  margin-bottom: var(--space-3);
+  word-break: break-all;
+  line-height: 1.6;
+}
+.cmd-preview .cmd-keyword { color: var(--color-primary); }
+.cmd-preview .cmd-path { color: var(--color-gold); }
+.cmd-preview .cmd-flag { color: var(--color-text-faint); }
+.cmd-preview .cmd-comment { color: var(--color-text-faint); font-style: italic; }
+
+/* ===================== PROGRESS ===================== */
+.transfer-block {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.transfer-header { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); }
+.transfer-title { font-weight: 600; font-size: var(--text-sm); flex: 1; }
+.transfer-status {
+  font-size: var(--text-xs); font-weight: 600;
+  display: flex; align-items: center; gap: var(--space-2);
+}
+.transfer-status.active { color: var(--color-primary); }
+.transfer-status.done { color: var(--color-success); }
+.pulse {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }
+
+.progress-item { margin-bottom: var(--space-3); }
+.progress-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: var(--space-1); font-size: var(--text-xs); }
+.progress-filename { font-family: var(--font-mono); color: var(--color-text-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-info { color: var(--color-text-faint); flex-shrink: 0; margin-left: var(--space-3); }
+.progress-bar-bg {
+  height: 4px; background: var(--color-surface-dynamic);
+  border-radius: var(--radius-full); overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%; border-radius: var(--radius-full);
+  background: var(--color-primary);
+  transition: width 0.3s ease;
+}
+.progress-bar-fill.done { background: var(--color-success); }
+.transfer-stats {
+  display: flex; gap: var(--space-6); margin-top: var(--space-4);
+  padding-top: var(--space-3); border-top: 1px solid var(--color-divider);
+}
+.stat-item { display: flex; flex-direction: column; gap: 2px; }
+.stat-value { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; color: var(--color-text); }
+.stat-label { font-size: var(--text-xs); color: var(--color-text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* ===================== CMD BUILDER FORM ===================== */
+.builder-steps { display: flex; flex-direction: column; gap: var(--space-3); }
+.builder-step {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.builder-step-header {
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-offset);
+  display: flex; align-items: center; gap: var(--space-3);
+  font-size: var(--text-xs); font-weight: 600; color: var(--color-text-muted);
+}
+.step-num {
+  width: 20px; height: 20px;
+  background: var(--color-primary-highlight);
+  color: var(--color-primary);
+  border-radius: var(--radius-full);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+}
+.builder-step-body { padding: var(--space-4); background: var(--color-surface); }
+
+/* ===================== SECTIONS ===================== */
+.section-header { margin-bottom: var(--space-5); display: flex; align-items: center; gap: var(--space-4); }
+.section-title { font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.02em; }
+.section-subtitle { font-size: var(--text-sm); color: var(--color-text-muted); margin-top: var(--space-1); }
+.divider { height: 1px; background: var(--color-divider); margin: var(--space-6) 0; }
+
+/* ===================== MODAL / OVERLAY ===================== */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: oklch(0.1 0 0 / 0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; padding: var(--space-4);
+  backdrop-filter: blur(4px);
+}
+.modal {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  width: 100%; max-width: 640px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-header {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--color-divider);
+  display: flex; align-items: center; gap: var(--space-3);
+}
+.modal-title { font-weight: 700; font-size: var(--text-base); flex: 1; }
+.modal-body { padding: var(--space-6); }
+.modal-footer {
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--color-divider);
+  display: flex; justify-content: flex-end; gap: var(--space-3);
+}
+.modal-close {
+  color: var(--color-text-muted);
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+}
+.modal-close:hover { color: var(--color-text); background: var(--color-surface-offset); }
+.modal-close svg { width: 16px; height: 16px; stroke: currentColor; fill: none; }
+
+/* ===================== BADGE / TAG ===================== */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--text-xs); font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+.badge-primary { background: var(--color-primary-highlight); color: var(--color-primary); }
+.badge-success { background: color-mix(in oklch, var(--color-success) 12%, transparent); color: var(--color-success); }
+.badge-warning { background: color-mix(in oklch, var(--color-warning) 12%, transparent); color: var(--color-warning); }
+.badge-muted { background: var(--color-surface-dynamic); color: var(--color-text-muted); }
+
+/* ===================== TOGGLE ===================== */
+.toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-divider);
+}
+.toggle-row:last-child { border-bottom: none; }
+.toggle-info { flex: 1; }
+.toggle-label { font-size: var(--text-sm); font-weight: 500; }
+.toggle-desc { font-size: var(--text-xs); color: var(--color-text-muted); margin-top: 2px; }
+.toggle {
+  position: relative;
+  width: 36px; height: 20px; flex-shrink: 0;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; inset: 0;
+  background: var(--color-surface-dynamic);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  left: 3px; top: 3px;
+  width: 14px; height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform var(--transition);
+}
+.toggle input:checked + .toggle-slider { background: var(--color-primary); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+/* ===================== PAGE VIEWS ===================== */
+.view { display: none; }
+.view.active { display: block; }
+
+/* ===================== EMPTY STATE ===================== */
+.empty-state {
+  text-align: center;
+  padding: var(--space-16) var(--space-8);
+  color: var(--color-text-muted);
+}
+.empty-state-icon {
+  width: 48px; height: 48px;
+  margin: 0 auto var(--space-4);
+  color: var(--color-text-faint);
+}
+.empty-state-icon svg { width: 100%; height: 100%; stroke: currentColor; fill: none; }
+.empty-state h3 { font-size: var(--text-base); font-weight: 600; color: var(--color-text); margin-bottom: var(--space-2); }
+.empty-state p { font-size: var(--text-sm); max-width: 36ch; margin: 0 auto var(--space-6); }
+
+/* ===================== ANNOTATION BOXES ===================== */
+.annotation {
+  border: 1.5px dashed var(--color-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  position: relative;
+  margin-top: var(--space-2);
+}
+.annotation-label {
+  position: absolute; top: -10px; left: var(--space-3);
+  background: var(--color-surface);
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.note-box {
+  background: color-mix(in oklch, var(--color-gold) 8%, var(--color-surface));
+  border: 1px solid color-mix(in oklch, var(--color-gold) 25%, var(--color-border));
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-4);
+  display: flex; gap: var(--space-2);
+}
+.note-box svg { width: 14px; height: 14px; stroke: var(--color-gold); fill: none; flex-shrink: 0; margin-top: 1px; }
+
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ========== SIDEBAR ========== -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" stroke-width="2.5"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M7 8l3 3-3 3"/></svg>
+        </div>
+        <span class="logo-text">HopTerm</span>
+      </div>
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-label">Навигация</div>
+        <div class="nav-item active" data-view="hosts" onclick="showView('hosts')">
+          <svg viewBox="0 0 24 24" stroke-width="1.75"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          Хосты
+          <span class="nav-item-badge" id="badge-hosts">0</span>
+        </div>
+        <div class="nav-item" data-view="terminal" onclick="showView('terminal')">
+          <svg viewBox="0 0 24 24" stroke-width="1.75"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          Терминал
+        </div>
+        <div class="nav-item" data-view="commands" onclick="showView('commands')">
+          <svg viewBox="0 0 24 24" stroke-width="1.75"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Команды
+        </div>
+        <div class="nav-item" data-view="transfers" onclick="showView('transfers')">
+          <svg viewBox="0 0 24 24" stroke-width="1.75"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
+          Передачи
+        </div>
+        <div class="nav-item" data-view="settings" onclick="showView('settings')">
+          <svg viewBox="0 0 24 24" stroke-width="1.75"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Настройки
+        </div>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-label">Быстрый доступ</div>
+        <div id="quick-hosts"></div>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <span>v0.1.0-alpha</span>
+      <span>Rust + webview</span>
+    </div>
+  </aside>
+
+  <!-- ========== MAIN ========== -->
+  <div class="main">
+
+    <!-- ===== VIEW: HOSTS ===== -->
+    <div id="view-hosts" class="view active">
+      <div class="topbar">
+        <span class="topbar-title">Хосты</span>
+        <button class="btn btn-ghost btn-sm">
+          <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Поиск
+        </button>
+        <button class="btn btn-primary btn-sm" onclick="openAddHost()">
+          <svg viewBox="0 0 24 24" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Добавить хост
+        </button>
+      </div>
+      <div class="content">
+        <div class="tabs" id="host-tabs">
+        </div>
+        <div class="host-grid" id="host-grid"></div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW: TERMINAL ===== -->
+    <div id="view-terminal" class="view">
+      <div class="topbar">
+        <div id="term-tabs" class="term-tabs"></div>
+        <span id="term-route" style="color:var(--color-text-muted);font-family:var(--font-mono);font-size:var(--text-xs);margin-left:auto"></span>
+      </div>
+      <div class="content" style="padding:0;overflow:hidden">
+        <div id="terms"></div>
+        <div id="term-empty" style="padding:24px;color:var(--color-text-muted)">Нет открытых сессий. Откройте хост на вкладке «Хосты».</div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW: COMMANDS ===== -->
+    <div id="view-commands" class="view">
+      <div class="topbar">
+        <span class="topbar-title">Быстрые команды</span>
+        <select id="cmd-filter" class="form-select" style="width:180px;padding:6px 28px 6px 10px;margin-left:auto" onchange="renderCommands()">
+          <option value="">Все хосты</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="openCmdModal()">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Новая команда
+        </button>
+      </div>
+      <div class="content">
+        <div id="cmd-list" class="cmd-list"></div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW: TRANSFERS ===== -->
+    <div id="view-transfers" class="view">
+      <div class="topbar">
+        <span class="topbar-title">Активные передачи</span>
+        <span id="xfer-session" style="color:var(--color-text-muted);font-size:var(--text-xs);font-family:var(--font-mono);margin-left:auto"></span>
+        <button class="btn btn-ghost btn-sm" onclick="clearDoneXfers()">Очистить завершённые</button>
+      </div>
+      <div class="content">
+        <div id="xfer-list"></div>
+
+        <div class="nav-section-label" style="margin:22px 0 10px">Файлы на хосте</div>
+        <div id="sftp-panel" style="display:none">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <button class="btn btn-ghost btn-sm" onclick="sftpUp()">↑ Вверх</button>
+            <input class="form-input form-input-mono" id="sftp-path" style="flex:1" onkeydown="if(event.key==='Enter')sftpGo(this.value)" />
+            <button class="btn btn-ghost btn-sm" onclick="sftpGo(document.getElementById('sftp-path').value)">Открыть</button>
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <input class="form-input form-input-mono" id="sftp-local" placeholder="локальный файл для загрузки, напр. /home/me/file.txt" style="flex:1" />
+            <button class="btn btn-primary btn-sm" onclick="sftpUpload()">⤴ Загрузить сюда</button>
+          </div>
+          <div class="cmd-card"><div id="sftp-list" class="sftp-list" style="padding:6px"></div></div>
+        </div>
+        <div id="sftp-empty" style="color:var(--color-text-muted);padding:8px">Подключитесь к хосту (вкладка «Хосты»), чтобы просматривать и скачивать файлы.</div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW: SETTINGS ===== -->
+    <div id="view-settings" class="view">
+      <div class="topbar">
+        <span class="topbar-title">Настройки</span>
+      </div>
+      <div class="content" style="max-width: 640px">
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="card-header"><span class="card-title">Конфигурация</span></div>
+          <div class="card-body">
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="toggle-label">Сохранять конфиг на диск</div>
+                <div class="toggle-desc">Шифрованный TOML-файл в ~/.rustssh/config.toml</div>
+              </div>
+              <label class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="toggle-label">Хранить пароли хопов</div>
+                <div class="toggle-desc">Используется системный keychain или зашифрованный файл</div>
+              </div>
+              <label class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="toggle-label">Сжимать перед скачиванием</div>
+                <div class="toggle-desc">tar -czf по умолчанию для команд типа "скачать папку"</div>
+              </div>
+              <label class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="toggle-label">Подтверждение перед exec-командами</div>
+                <div class="toggle-desc">Диалог подтверждения для деструктивных операций</div>
+              </div>
+              <label class="toggle"><input type="checkbox"><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Путь к конфигу</span></div>
+          <div class="card-body">
+            <div class="form-group">
+              <label class="form-label">Директория конфигурации</label>
+              <input class="form-input form-input-mono" value="~/.rustssh/" />
+              <div class="form-hint">Файлы: config.toml, known_hosts, keys/</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ========== MODAL: ADD HOST ========== -->
+<div id="modal-add-host" class="modal-backdrop" style="display:none" onclick="closeModal(event, 'add-host')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="addhost-title">Добавить хост</span>
+      <button class="modal-close" onclick="hideModal('add-host')">
+        <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Имя подключения <span class="required">*</span></label>
+        <input class="form-input" id="host-name" placeholder="prod-backend-01" />
+        <div class="form-hint">Отображается в боковой панели и списке хостов</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Теги</label>
+        <input class="form-input" id="host-tags" placeholder="production, eu" />
+        <div class="form-hint">Через запятую — используются фильтрами (Production / Dev/Staging / Bastion)</div>
+      </div>
+
+      <div class="divider" style="margin: var(--space-4) 0"></div>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--space-3)">
+        <label class="form-label" style="margin:0">Цепочка хопов <span class="required">*</span></label>
+        <button class="btn btn-ghost btn-sm" onclick="addJump()">
+          <svg viewBox="0 0 24 24" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Добавить хоп
+        </button>
+      </div>
+
+      <div class="note-box">
+        <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        Хопы выполняются последовательно. Последний — целевой хост. Каждый предыдущий — jump-сервер (ProxyJump).
+      </div>
+
+      <div class="hop-list" id="hop-list">
+        <!-- HOP 1 -->
+        <div class="hop-item">
+          <div class="hop-item-header">
+            <span class="hop-badge">1</span>
+            <span class="hop-label">Jump-сервер #1</span>
+            <button class="hop-remove" onclick="removeHop(this)"><svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+          </div>
+          <div class="form-row-3">
+            <div>
+              <label class="form-label">Пользователь</label>
+              <input class="form-input form-input-mono" placeholder="root" value="admin" />
+            </div>
+            <div>
+              <label class="form-label">Порт</label>
+              <input class="form-input form-input-mono" placeholder="22" value="22" />
+            </div>
+            <div>
+              <label class="form-label">Хост / IP</label>
+              <input class="form-input form-input-mono" placeholder="10.0.0.1" value="bastion.example.com" />
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:var(--space-3)">
+            <div>
+              <label class="form-label">Аутентификация</label>
+              <select class="form-select">
+                <option>SSH ключ</option>
+                <option selected>Пароль</option>
+                <option>SSH Agent</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Пароль / Путь к ключу</label>
+              <input class="form-input form-input-mono" type="password" value="••••••••" />
+            </div>
+          </div>
+        </div>
+        <!-- HOP 2 -->
+        <div class="hop-item">
+          <div class="hop-item-header">
+            <span class="hop-badge">2</span>
+            <span class="hop-label">Jump-сервер #2</span>
+            <button class="hop-remove" onclick="removeHop(this)"><svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+          </div>
+          <div class="form-row-3">
+            <div>
+              <label class="form-label">Пользователь</label>
+              <input class="form-input form-input-mono" placeholder="root" value="ubuntu" />
+            </div>
+            <div>
+              <label class="form-label">Порт</label>
+              <input class="form-input form-input-mono" placeholder="22" value="2222" />
+            </div>
+            <div>
+              <label class="form-label">Хост / IP</label>
+              <input class="form-input form-input-mono" placeholder="10.0.0.1" value="10.10.0.5" />
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:var(--space-3)">
+            <div>
+              <label class="form-label">Аутентификация</label>
+              <select class="form-select">
+                <option selected>SSH ключ</option>
+                <option>Пароль</option>
+                <option>SSH Agent</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Путь к ключу</label>
+              <input class="form-input form-input-mono" placeholder="~/.ssh/id_ed25519" value="~/.ssh/jump2_key" />
+            </div>
+          </div>
+        </div>
+        <!-- TARGET -->
+        <div class="hop-item" style="border-color: var(--color-primary); border-width: 1.5px;">
+          <div class="hop-item-header">
+            <span class="hop-badge final">🎯</span>
+            <span class="hop-label" style="color:var(--color-primary); font-weight:700">Целевой хост</span>
+          </div>
+          <div class="form-row-3">
+            <div>
+              <label class="form-label">Пользователь</label>
+              <input class="form-input form-input-mono" placeholder="root" value="admin" />
+            </div>
+            <div>
+              <label class="form-label">Порт</label>
+              <input class="form-input form-input-mono" placeholder="22" value="22" />
+            </div>
+            <div>
+              <label class="form-label">Хост / IP</label>
+              <input class="form-input form-input-mono" placeholder="192.168.1.100" value="192.168.1.100" />
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:var(--space-3)">
+            <div>
+              <label class="form-label">Аутентификация</label>
+              <select class="form-select">
+                <option selected>SSH ключ</option>
+                <option>Пароль</option>
+                <option>SSH Agent</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Путь к ключу</label>
+              <input class="form-input form-input-mono" placeholder="~/.ssh/id_ed25519" value="~/.ssh/prod_key" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chain preview -->
+      <div class="hop-chain" id="hop-chain-preview"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="host-delete-btn" style="display:none;color:var(--color-notification);margin-right:auto" onclick="deleteHost()">Удалить</button>
+      <button class="btn btn-ghost" onclick="hideModal('add-host')">Отмена</button>
+      <button class="btn btn-primary" onclick="saveHost()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== MODAL: ADD COMMAND ========== -->
+<div id="modal-add-command" class="modal-backdrop" style="display:none" onclick="closeModal(event, 'add-command')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="cmd-modal-title">Конструктор команды</span>
+      <button class="modal-close" onclick="hideModal('add-command')">
+        <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row" style="margin-bottom:var(--space-4)">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Название команды <span class="required">*</span></label>
+          <input class="form-input" id="cmd-name" placeholder="Бэкап логов prod" oninput="updateCmdPreview()" />
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Хост</label>
+          <select class="form-select" id="cmd-host" onchange="updateCmdPreview()"></select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Тип операции</label>
+        <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
+          <button type="button" class="btn btn-ghost btn-sm" id="type-exec" onclick="selectCmdType('exec')">▶ Выполнить</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="type-download" onclick="selectCmdType('download')">↓ Скачать</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="type-upload" onclick="selectCmdType('upload')">↑ Загрузить</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="type-pipeline" onclick="selectCmdType('pipeline')">⛓ Пайплайн</button>
+        </div>
+      </div>
+
+      <div class="divider" style="margin:var(--space-4) 0"></div>
+
+      <!-- ▶ exec -->
+      <div id="cmd-form-exec" class="cmd-form">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Команда <span class="required">*</span></label>
+          <textarea class="form-input form-input-mono" id="cmd-exec-text" rows="3" placeholder="sudo systemctl restart nginx" style="resize:vertical;min-height:80px" oninput="updateCmdPreview()"></textarea>
+          <div class="form-hint">Наберётся в сессии хоста, как в терминале.</div>
+        </div>
+      </div>
+
+      <!-- ⛓ pipeline -->
+      <div id="cmd-form-pipeline" class="cmd-form" style="display:none">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Шаги — по одному на строку <span class="required">*</span></label>
+          <textarea class="form-input form-input-mono" id="cmd-pipe-text" rows="5" placeholder="cd /srv/app&#10;git pull&#10;docker compose up -d --build" style="resize:vertical;min-height:110px" oninput="updateCmdPreview()"></textarea>
+          <div class="form-hint">Выполнятся последовательно в одной сессии.</div>
+        </div>
+      </div>
+
+      <!-- ↓ download -->
+      <div id="cmd-form-download" class="cmd-form" style="display:none">
+        <div class="builder-steps">
+          <div class="builder-step">
+            <div class="builder-step-header"><span class="step-num">1</span> Файл на хосте (источник)</div>
+            <div class="builder-step-body"><input class="form-input form-input-mono" id="cmd-dl-src" placeholder="/var/log/app/app.log" oninput="updateCmdPreview()" /></div>
+          </div>
+          <div class="builder-step">
+            <div class="builder-step-header"><span class="step-num">2</span> Локальная папка назначения</div>
+            <div class="builder-step-body"><input class="form-input form-input-mono" id="cmd-dl-dst" value="~/Downloads" oninput="updateCmdPreview()" /></div>
+          </div>
+        </div>
+        <div class="form-hint" style="margin-top:var(--space-2)">Скачивание по SFTP через ту же цепочку хопов, с прогресс-баром на вкладке «Передачи».</div>
+      </div>
+
+      <!-- ↑ upload -->
+      <div id="cmd-form-upload" class="cmd-form" style="display:none">
+        <div class="builder-steps">
+          <div class="builder-step">
+            <div class="builder-step-header"><span class="step-num">1</span> Локальный файл (источник)</div>
+            <div class="builder-step-body"><input class="form-input form-input-mono" id="cmd-ul-src" placeholder="/home/me/config.yaml" oninput="updateCmdPreview()" /></div>
+          </div>
+          <div class="builder-step">
+            <div class="builder-step-header"><span class="step-num">2</span> Папка назначения на хосте</div>
+            <div class="builder-step-body"><input class="form-input form-input-mono" id="cmd-ul-dst" placeholder="/etc/app/" oninput="updateCmdPreview()" /></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider" style="margin:var(--space-4) 0"></div>
+      <label class="form-label">Предпросмотр команды</label>
+      <div class="cmd-preview" id="cmd-preview">—</div>
+
+      <label class="toggle-row" style="cursor:pointer;margin-top:var(--space-3)">
+        <div class="toggle-info"><div class="toggle-label">Требовать подтверждения перед запуском</div></div>
+        <label class="toggle"><input type="checkbox" id="cmd-confirm"><span class="toggle-slider"></span></label>
+      </label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="cmd-delete-btn" style="display:none;color:var(--color-notification);margin-right:auto" onclick="deleteCmd()">Удалить</button>
+      <button class="btn btn-ghost" onclick="hideModal('add-command')">Отмена</button>
+      <button class="btn btn-primary" onclick="saveCmd()">Сохранить команду</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function showView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const view = document.getElementById('view-' + name);
+  if (view) view.classList.add('active');
+  const item = document.querySelector('.nav-item[data-view="' + name + '"]');
+  if (item) item.classList.add('active');
+  if (name === 'terminal') { const s = sessions[activeId]; if (s) setTimeout(() => { s.fit.fit(); hopResize(); s.term.focus(); }, 30); }
+  if (name === 'transfers') openTransfers();
+  if (name === 'commands') { renderCommands(); send({ cmd:'cmd_list' }); }
+}
+function showModal(name) {
+  document.getElementById('modal-' + name).style.display = 'flex';
+}
+function hideModal(name) {
+  document.getElementById('modal-' + name).style.display = 'none';
+}
+function closeModal(e, name) {
+  if (e.target === document.getElementById('modal-' + name)) hideModal(name);
+}
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+}
+let cmdBuildType = 'exec';
+function selectCmdType(t) {
+  cmdBuildType = t;
+  ['exec','download','upload','pipeline'].forEach(x => {
+    document.getElementById('type-'+x).className = 'btn btn-sm ' + (x===t ? 'btn-primary' : 'btn-ghost');
+    const f = document.getElementById('cmd-form-'+x); if (f) f.style.display = (x===t ? 'block' : 'none');
+  });
+  updateCmdPreview();
+}
+function cmdHostName(id) { const h = lastHosts.find(h => h.id === id); return h ? h.name : (id || 'хост'); }
+function val(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+/* Build the textual command (also the stored `command` string / preview source). */
+function buildCommandText(type) {
+  const hn = cmdHostName(val('cmd-host') || (document.getElementById('cmd-host')||{}).value);
+  if (type === 'exec')     return val('cmd-exec-text');
+  if (type === 'pipeline') return (document.getElementById('cmd-pipe-text')||{value:''}).value.split('\n').map(s=>s.trim()).filter(Boolean).join('\n');
+  if (type === 'download') { const s = val('cmd-dl-src'), d = val('cmd-dl-dst') || '~/Downloads'; return `# скачать по SFTP с прогрессом\nsftp ${hn}:${s||'/path/on/host'} → ${d}`; }
+  if (type === 'upload')   { const s = val('cmd-ul-src'), d = val('cmd-ul-dst'); return `# загрузить по SFTP с прогрессом\nsftp ${s||'/local/file'} → ${hn}:${d||'/remote/dir/'}`; }
+  return '';
+}
+function updateCmdPreview() {
+  const el = document.getElementById('cmd-preview'); if (!el) return;
+  let txt = buildCommandText(cmdBuildType);
+  if (cmdBuildType === 'pipeline' && txt) txt = txt.split('\n').map((s,i)=>`# шаг ${i+1}\n${s}`).join('\n');
+  el.innerHTML = txt ? highlightCmd(txt) : '<span style="color:var(--color-text-faint)">…</span>';
+}
+
+/* ===================== HopTerm bridge ===================== */
+function send(obj) { window.ipc.postMessage(JSON.stringify(obj)); }
+function b64ToBytes(b64) { const s = atob(b64); const a = new Uint8Array(s.length); for (let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
+function strToB64(s) { return btoa(unescape(encodeURIComponent(s))); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function routeDisplay(r){ return (r||'').split(' → ').filter(n=>n && n!=='localhost').join(' → '); }
+function human(b){ const u=['Б','КБ','МБ','ГБ']; let v=b||0,i=0; while(v>=1024&&i<3){v/=1024;i++;} return v.toFixed(i?1:0)+' '+u[i]; }
+
+/* ===================== Transfers (SFTP) ===================== */
+let sftpKey = null, sftpPath = '.';
+const xfers = {};
+function openTransfers() {
+  sftpKey = activeId;
+  const panel = document.getElementById('sftp-panel'), empty = document.getElementById('sftp-empty');
+  const sess = sftpKey && sessions[sftpKey];
+  document.getElementById('xfer-session').textContent = sess ? sess.title : '';
+  if (sess) { panel.style.display='block'; empty.style.display='none'; sftpGo(sftpPath); }
+  else { panel.style.display='none'; empty.style.display='block'; }
+}
+function sftpGo(path) { if (sftpKey) send({ cmd:'sftp_list', id: sftpKey, path: path || '.' }); }
+function sftpUp() {
+  let p = (sftpPath||'').replace(/\/+$/,''); if (!p) return;
+  const i = p.lastIndexOf('/'); sftpGo(i > 0 ? p.slice(0,i) : '/');
+}
+function fileIcon(dir) {
+  return dir ? '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+             : '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+}
+function renderSftp(path, entries) {
+  sftpPath = path;
+  document.getElementById('sftp-path').value = path;
+  const list = document.getElementById('sftp-list'); list.innerHTML = '';
+  if (!entries.length) { list.innerHTML = '<div style="padding:8px;color:var(--color-text-muted)">пусто</div>'; return; }
+  for (const e of entries) {
+    const row = document.createElement('div'); row.className = 'sftp-row' + (e.dir ? ' dir' : '');
+    const full = (path.replace(/\/+$/,'')) + '/' + e.name;
+    row.innerHTML = `${fileIcon(e.dir)}<span class="sname">${esc(e.name)}</span>${e.dir?'':`<span class="ssize">${human(e.size)}</span><span class="sdl">↓ скачать</span>`}`;
+    row.onclick = () => { if (e.dir) sftpGo(full); else send({ cmd:'download', id: sftpKey, remote: full }); };
+    list.appendChild(row);
+  }
+}
+function sftpUpload() {
+  const local = document.getElementById('sftp-local').value.trim();
+  if (!local || !sftpKey) return;
+  const name = local.replace(/\/+$/,'').split('/').pop();
+  send({ cmd:'upload', id: sftpKey, local, remote: (sftpPath.replace(/\/+$/,'')) + '/' + name });
+  document.getElementById('sftp-local').value = '';
+}
+function clearDoneXfers() {
+  for (const id of Object.keys(xfers)) if (xfers[id].status === 'done' || xfers[id].status === 'error') delete xfers[id];
+  renderXfers();
+}
+function renderXfers() {
+  const el = document.getElementById('xfer-list');
+  const items = Object.values(xfers).sort((a,b)=>b.ts-a.ts);
+  if (!items.length) { el.innerHTML = '<div style="color:var(--color-text-muted);font-size:var(--text-sm);padding:6px 2px">Нет активных передач. Скачайте файл из списка ниже или загрузите свой.</div>'; return; }
+  el.innerHTML = items.map(x => {
+    const t = x.t || 0, total = x.total || 0, running = x.status === 'running';
+    const done = x.status === 'done', err = x.status === 'error';
+    const pct = total ? Math.min(100, Math.round(t/total*100)) : (done ? 100 : 0);
+    const statusTxt = done ? 'Завершено' : err ? 'Ошибка' : (x.dir==='up' ? 'Загрузка' : 'Выполняется');
+    const fill = err ? ';background:var(--color-notification)' : '';
+    const speed = (running && x.speed) ? human(x.speed)+'/с' : '—';
+    const eta = (running && x.speed && total>t) ? '~'+Math.max(1, Math.round((total-t)/x.speed))+' сек' : '—';
+    return `<div class="transfer-block">
+      <div class="transfer-header">
+        <div class="transfer-title">${esc(x.name)}</div>
+        <div class="transfer-status ${done?'done':'active'}"${err?' style="color:var(--color-notification)"':''}>${running?'<span class="pulse"></span>':''}${statusTxt}</div>
+        ${running?`<button class="btn btn-ghost btn-sm" style="color:var(--color-notification)" onclick="send({cmd:'xfer_cancel',id:'${x.id}'})">Отмена</button>`:''}
+      </div>
+      <div class="progress-item">
+        <div class="progress-row"><span class="progress-filename">${esc(x.name)}</span><span class="progress-info">${human(t)} / ${human(total)}</span></div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill${done?' done':''}" style="width:${pct}%${fill}"></div></div>
+      </div>
+      ${err ? `<div style="color:var(--color-notification);font-size:var(--text-xs);margin-top:8px;font-family:var(--font-mono)">${esc(x.error||'ошибка передачи')}</div>` : `
+      <div class="transfer-stats">
+        <div class="stat-item"><span class="stat-value">${speed}</span><span class="stat-label">Скорость</span></div>
+        <div class="stat-item"><span class="stat-value">${eta}</span><span class="stat-label">Осталось</span></div>
+        <div class="stat-item"><span class="stat-value">${human(t)}</span><span class="stat-label">Передано</span></div>
+        <div class="stat-item"><span class="stat-value">${x.dir==='up'?'⤴ upload':'⤵ download'}</span><span class="stat-label">Направление</span></div>
+        <div class="stat-item"><span class="stat-value">SFTP</span><span class="stat-label">Протокол</span></div>
+      </div>`}
+    </div>`;
+  }).join('');
+}
+
+/* ===================== Quick commands ===================== */
+let commands = [];
+let editingCmdId = null;
+const pendingCmd = {};
+const CMD_EDIT_SVG = '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+const CMD_TRASH_SVG = '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+const CMD_TYPES = {
+  download: { cls:'cmd-type-download', label:'СКАЧАТЬ', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>' },
+  upload:   { cls:'cmd-type-upload',   label:'ЗАГРУЗИТЬ', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>' },
+  exec:     { cls:'cmd-type-exec',     label:'СКРИПТ', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="4 17 10 11 4 5"/></svg>' },
+  pipeline: { cls:'cmd-type-exec',     label:'ПАЙПЛАЙН', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>' },
+};
+function cmdType(c) {
+  if (c.type && CMD_TYPES[c.type]) return c.type;          // explicit type from the builder
+  const t = (c.command || '').trim().toLowerCase();          // legacy commands: infer
+  if (/^(sftp|scp)\b/.test(t) && /(→|->|\bput\b|^\S*upload)/.test(t)) return 'upload';
+  if (/^(sftp|scp)\b/.test(t)) return 'download';
+  return 'exec';
+}
+const CMD_KEYWORDS = new Set(['sudo','ssh','sftp','scp','tar','systemctl','restart','status','start','stop','enable','disable','reload','docker','kubectl','git','apt','apt-get','cd','rm','cp','mv','cat','grep','ls','mkdir','chmod','chown','curl','wget','&&','||','|','>','>>']);
+function highlightLine(line) {
+  if (/^\s*#/.test(line)) return `<span class="cmd-comment">${esc(line)}</span>`;
+  const lead = line.match(/^\s*/)[0];
+  const toks = line.slice(lead.length).split(/(\s+)/);
+  return lead + toks.map(tok => {
+    if (tok === '' || /^\s+$/.test(tok)) return tok;
+    const e = esc(tok);
+    if (CMD_KEYWORDS.has(tok)) return `<span class="cmd-keyword">${e}</span>`;
+    if (/^-{1,2}[a-zA-Z]/.test(tok)) return `<span class="cmd-flag">${e}</span>`;
+    if (/^~?\//.test(tok) || /^[\w.@~-]+\/\S/.test(tok)) return `<span class="cmd-path">${e}</span>`;
+    return e;
+  }).join('');
+}
+function highlightCmd(text) { return (text || '').split('\n').map(highlightLine).join('<br>'); }
+function fillCmdFilter() {
+  const sel = document.getElementById('cmd-filter'); if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Все хосты</option>' +
+    lastHosts.map(h => `<option value="${esc(h.id)}">${esc(h.name)}</option>`).join('');
+  sel.value = cur;
+}
+function renderCommands() {
+  const el = document.getElementById('cmd-list');
+  const filter = (document.getElementById('cmd-filter') || {}).value || '';
+  const items = filter ? commands.filter(c => c.host === filter) : commands;
+  if (!items.length) {
+    el.innerHTML = `<div style="color:var(--color-text-muted);font-size:var(--text-sm);padding:8px">${commands.length ? 'Нет команд для выбранного хоста.' : 'Нет сохранённых команд. Нажмите «Новая команда».'}</div>`;
+    return;
+  }
+  el.innerHTML = '';
+  for (const c of items) {
+    const host = lastHosts.find(h => h.id === c.host);
+    const ty = CMD_TYPES[cmdType(c)];
+    const card = document.createElement('div'); card.className = 'cmd-card';
+    card.innerHTML = `
+      <div class="cmd-card-header">
+        <span class="cmd-type-badge ${ty.cls}">${ty.icon}${ty.label}</span>
+        <span class="cmd-name">${esc(c.name)}</span>
+        <span class="cmd-host-tag">${host ? esc(host.name) : esc(c.host || '—')}</span>
+        <div style="display:flex;gap:var(--space-2);margin-left:auto">
+          <button class="btn btn-primary btn-sm cmd-run">▶ Запустить</button>
+          <button class="icon-btn cmd-edit" title="Изменить">${CMD_EDIT_SVG}</button>
+          <button class="icon-btn cmd-del" title="Удалить" style="color:var(--color-notification)">${CMD_TRASH_SVG}</button>
+        </div>
+      </div>
+      <div class="cmd-body">
+        <div class="cmd-preview">${highlightCmd(c.command)}</div>
+        <div style="display:flex;gap:var(--space-3);flex-wrap:wrap">
+          ${host ? `<div class="badge badge-muted">${esc(host.endpoint || host.name)}</div>` : ''}
+          ${/\bsudo\b/.test(c.command || '') ? '<div class="badge badge-warning">sudo</div>' : ''}
+          <div class="badge badge-primary">${ty.label.charAt(0) + ty.label.slice(1).toLowerCase()}</div>
+        </div>
+      </div>`;
+    card.querySelector('.cmd-run').onclick = () => runCmd(c);
+    card.querySelector('.cmd-edit').onclick = () => editCmd(c);
+    card.querySelector('.cmd-del').onclick = () => send({ cmd:'cmd_delete', id: c.id });
+    el.appendChild(card);
+  }
+}
+function fillCmdHosts(selected) {
+  const sel = document.getElementById('cmd-host'); sel.innerHTML = '';
+  for (const h of lastHosts) {
+    const o = document.createElement('option'); o.value = h.id; o.textContent = h.name;
+    if (h.id === selected) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+function resetCmdForm() {
+  ['cmd-name','cmd-exec-text','cmd-pipe-text','cmd-dl-src','cmd-ul-src','cmd-ul-dst'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  document.getElementById('cmd-dl-dst').value = '~/Downloads';
+  document.getElementById('cmd-confirm').checked = false;
+}
+function openCmdModal() {
+  editingCmdId = null;
+  document.getElementById('cmd-modal-title').textContent = 'Конструктор команды';
+  resetCmdForm();
+  fillCmdHosts(lastHosts[0] ? lastHosts[0].id : '');
+  document.getElementById('cmd-delete-btn').style.display = 'none';
+  selectCmdType('exec');
+  showModal('add-command');
+}
+function editCmd(c) {
+  editingCmdId = c.id;
+  document.getElementById('cmd-modal-title').textContent = 'Изменить команду';
+  resetCmdForm();
+  document.getElementById('cmd-name').value = c.name || '';
+  document.getElementById('cmd-confirm').checked = !!c.confirm;
+  fillCmdHosts(c.host);
+  const type = cmdType(c);
+  if (type === 'pipeline')      document.getElementById('cmd-pipe-text').value = c.command || '';
+  else if (type === 'download') { document.getElementById('cmd-dl-src').value = c.src || ''; document.getElementById('cmd-dl-dst').value = c.dst || '~/Downloads'; }
+  else if (type === 'upload')   { document.getElementById('cmd-ul-src').value = c.src || ''; document.getElementById('cmd-ul-dst').value = c.dst || ''; }
+  else                          document.getElementById('cmd-exec-text').value = c.command || '';
+  document.getElementById('cmd-delete-btn').style.display = 'inline-flex';
+  selectCmdType(type);
+  showModal('add-command');
+}
+function saveCmd() {
+  const name = document.getElementById('cmd-name').value.trim();
+  const host = document.getElementById('cmd-host').value;
+  const confirm = document.getElementById('cmd-confirm').checked;
+  const type = cmdBuildType;
+  if (!name) { alert('Укажите название команды'); return; }
+  const payload = { id: editingCmdId, name, host, type, confirm };
+  if (type === 'download') {
+    payload.src = val('cmd-dl-src'); payload.dst = val('cmd-dl-dst') || '~/Downloads';
+    if (!payload.src) { alert('Укажите путь к файлу на хосте'); return; }
+  } else if (type === 'upload') {
+    payload.src = val('cmd-ul-src'); payload.dst = val('cmd-ul-dst');
+    if (!payload.src || !payload.dst) { alert('Укажите локальный файл и папку назначения'); return; }
+  } else {
+    payload.command = buildCommandText(type);
+    if (!payload.command) { alert('Введите команду'); return; }
+  }
+  if (type === 'download' || type === 'upload') payload.command = buildCommandText(type).replace(/^#.*\n/, '');
+  send({ cmd:'cmd_save', command: payload });
+  // Optimistic update: show the change at once instead of waiting on the async
+  // backend echo (which the persisted list then reconciles, ids and all).
+  const local = Object.assign({}, payload);
+  if (!local.id) local.id = 'tmp-' + Date.now();
+  const idx = commands.findIndex(c => c.id === local.id);
+  if (idx >= 0) commands[idx] = local; else commands.push(local);
+  renderCommands();
+  hideModal('add-command');
+}
+function deleteCmd() { if (editingCmdId) send({ cmd:'cmd_delete', id: editingCmdId }); hideModal('add-command'); }
+const pendingXfer = {};
+function runCmd(c) {
+  if (c.confirm && !window.confirm(`Запустить команду «${c.name}»?`)) return;
+  const host = lastHosts.find(h => h.id === c.host);
+  const name = host ? host.name : c.host;
+  const key = c.host;                       // run in the normal (non-sudo) session
+  const type = cmdType(c);
+  const wasLive = sessions[key] && sessions[key].live;
+  openSession(c.host, name, false);
+  if (type === 'download' || type === 'upload') {
+    const run = () => {
+      if (type === 'download') send({ cmd:'download', id: key, remote: c.src, local_dir: c.dst });
+      else { const fn = (c.src||'').replace(/\/+$/,'').split('/').pop(); send({ cmd:'upload', id: key, local: c.src, remote: (c.dst||'').replace(/\/?$/,'/') + fn }); }
+      showView('transfers');
+    };
+    if (wasLive) run(); else pendingXfer[key] = run;
+    return;
+  }
+  const payload = (c.command || '').replace(/\n+$/, '') + '\n';
+  if (wasLive) send({ cmd:'input', id: key, data: strToB64(payload) });
+  else pendingCmd[key] = payload;           // deferred until 'connected'
+}
+
+/* ---- multi-session terminal: one xterm per profile, opened lazily ---- */
+const sessions = {};   // id -> { term, fit, pane, title, route, live }
+let activeId = null;
+
+const XTERM_THEME = { background:'#161513', foreground:'#d0cfc8', cursor:'#d0cfc8',
+  cursorAccent:'#161513', selectionBackground:'#4db3bf', selectionForeground:'#11100c', selectionInactiveBackground:'#3d9da877',
+  black:'#161513', red:'#e06c75', green:'#98c379', yellow:'#d4a020', blue:'#61afef',
+  magenta:'#c678dd', cyan:'#56b6c2', white:'#d0cfc8',
+  brightBlack:'#4a4946', brightRed:'#f7768e', brightGreen:'#b9f27c', brightYellow:'#ffc777',
+  brightBlue:'#82aaff', brightMagenta:'#c6a8ff', brightCyan:'#a4daff', brightWhite:'#f0efe8' };
+
+/* Create the xterm pane for a session if it doesn't exist yet (no IPC).
+   xterm must be opened into a *visible, sized* element, so we switch to the
+   terminal view and make this pane active before calling term.open(). */
+function ensureSession(id, name) {
+  if (sessions[id]) { if (name) sessions[id].title = name; return sessions[id]; }
+  showView('terminal');
+  const terms = document.getElementById('terms');
+  for (const v of Object.values(sessions)) v.pane.classList.remove('active');
+  document.getElementById('term-empty').style.display = 'none';
+  const pane = document.createElement('div'); pane.className = 'term-pane active';
+  const host = document.createElement('div'); host.style.cssText = 'width:100%;height:100%';
+  pane.appendChild(host);
+  terms.appendChild(pane);
+  const term = new Terminal({ fontFamily:"'JetBrains Mono', monospace", fontSize:13, cursorBlink:true, theme: XTERM_THEME });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+  term.open(host);            // host is visible and sized now
+  try { fit.fit(); } catch (e) {}
+  term.onData(d => { if (sessions[id]) send({ cmd:'input', id, data: strToB64(d) }); });
+  // Copy/paste by physical key (e.code) so it works in any keyboard layout.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || !e.ctrlKey || e.altKey) return true;
+    if (e.code === 'KeyC') {
+      const sel = term.getSelection();
+      if (sel) { send({ cmd:'copy', text: sel }); return false; }   // copy selection
+      if (e.shiftKey) return false;
+      send({ cmd:'input', id, data: strToB64('\x03') });            // Ctrl+C w/o selection → SIGINT
+      return false;
+    }
+    if (e.code === 'KeyV') { send({ cmd:'paste', id }); return false; }  // paste
+    return true;
+  });
+  sessions[id] = { term, fit, pane, title: name || id, route:'', live:false };
+  renderTabs();
+  return sessions[id];
+}
+
+function openSession(profileId, name, sudo) {
+  // sudo sessions get a separate key → own tab, never reuse the non-sudo one.
+  const key = sudo ? profileId + '#sudo' : profileId;
+  showView('terminal');
+  const fresh = !sessions[key];
+  ensureSession(key, sudo ? (name + ' (sudo)') : name);
+  setActive(key);
+  if (fresh) send({ cmd:'connect', id: key, sudo: !!sudo });   // connect only on first open (lazy)
+}
+
+function setActive(id) {
+  activeId = id;
+  const s = sessions[id];
+  document.getElementById('term-empty').style.display = s ? 'none' : 'block';
+  for (const [k, v] of Object.entries(sessions)) v.pane.classList.toggle('active', k === id);
+  renderTabs();
+  document.getElementById('term-route').textContent = s ? (s.route || '') : '';
+  if (s) requestAnimationFrame(() => {
+    try { s.fit.fit(); s.term.refresh(0, s.term.rows - 1); } catch (e) {}
+    hopResize(); s.term.focus();
+  });
+}
+
+/* Tear down the session UI (no IPC). Used on shell exit and after disconnect. */
+function removeSession(id) {
+  const s = sessions[id];
+  if (s) { try { s.term.dispose(); } catch(e){} s.pane.remove(); delete sessions[id]; }
+  if (activeId === id) {
+    const next = Object.keys(sessions)[0] || null;
+    if (next) setActive(next);
+    else { activeId = null; renderTabs(); document.getElementById('term-empty').style.display = 'block'; document.getElementById('term-route').textContent = ''; }
+  } else renderTabs();
+  refreshHosts();
+}
+/* User closed the tab → also tell the backend to drop the session. */
+function closeSession(id) { send({ cmd:'disconnect', id }); removeSession(id); }
+
+function renderTabs() {
+  const bar = document.getElementById('term-tabs'); bar.innerHTML = '';
+  for (const [id, s] of Object.entries(sessions)) {
+    const tab = document.createElement('div');
+    tab.className = 'term-tab' + (id === activeId ? ' active' : '') + (s.live ? ' live' : '');
+    tab.innerHTML = `<span class="tdot"></span><span>${esc(s.title)}</span><span class="tclose">×</span>`;
+    tab.onclick = (e) => { if (e.target.classList.contains('tclose')) closeSession(id); else setActive(id); };
+    bar.appendChild(tab);
+  }
+}
+
+function hopResize() { const s = sessions[activeId]; if (s) send({ cmd:'resize', id: activeId, cols: s.term.cols, rows: s.term.rows }); }
+function hopDisconnect() { if (activeId) closeSession(activeId); }
+window.addEventListener('resize', () => { const s = sessions[activeId]; if (s) { s.fit.fit(); hopResize(); } });
+
+let lastHosts = [];
+let hostFilter = '';
+function isLive(id) { return !!((sessions[id] && sessions[id].live) || (sessions[id + '#sudo'] && sessions[id + '#sudo'].live)); }
+function refreshHosts() { renderHosts(lastHosts); }
+function matchFilter(h) {
+  if (!hostFilter) return true;
+  const tags = (h.tags || []).map(t => ('' + t).toLowerCase());
+  return hostFilter.split(',').some(k => tags.some(t => t.includes(k)));
+}
+function setHostFilter(el) {
+  hostFilter = el.dataset.filter || '';
+  renderHosts(lastHosts);
+}
+/* Build filter tabs from the union of all host tags (auto-generated). */
+function renderHostTabs() {
+  const tabs = document.getElementById('host-tabs');
+  const all = [...new Set(lastHosts.flatMap(h => (h.tags || []).map(t => ('' + t).toLowerCase())))].sort();
+  const mk = (filter, label) => `<div class="tab${hostFilter===filter?' active':''}" data-filter="${esc(filter)}" onclick="setHostFilter(this)">${esc(label)}</div>`;
+  tabs.innerHTML = mk('', 'Все хосты') + all.map(t => mk(t, t)).join('');
+}
+function renderHosts(items) {
+  lastHosts = items;
+  fillCmdFilter();
+  if (commands.length) renderCommands();
+  const validTags = new Set(lastHosts.flatMap(h => (h.tags || []).map(t => ('' + t).toLowerCase())));
+  if (hostFilter && !validTags.has(hostFilter)) hostFilter = '';
+  renderHostTabs();
+  const grid = document.getElementById('host-grid'); grid.innerHTML = '';
+  const quick = document.getElementById('quick-hosts'); quick.innerHTML = '';
+  document.getElementById('badge-hosts').textContent = items.length;
+  const shown = items.filter(matchFilter);
+  if (shown.length === 0) {
+    grid.innerHTML = '<div style="color:var(--color-text-muted);padding:8px">Нет хостов в этой категории.</div>';
+  }
+  for (const h of shown) {
+    const live = isLive(h.id);
+    const hopTxt = h.hops === 0 ? 'прямой' : (h.hops + ' хоп(а)');
+    const card = document.createElement('div'); card.className = 'host-card';
+    card.innerHTML = `
+      <div class="host-card-top">
+        <div class="host-icon"><svg viewBox="0 0 24 24" stroke-width="1.75"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+        <div class="host-info">
+          <div class="host-name">${esc(h.name)}</div>
+          <div class="host-address">${esc(h.endpoint)}</div>
+        </div>
+        <span class="badge ${live?'badge-success':'badge-muted'}">${live?'online':'offline'}</span>
+      </div>
+      <div class="hop-chain" style="margin:10px 0 4px"><span style="color:var(--color-text-faint);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-right:4px">Маршрут</span>${
+        routeDisplay(h.route).split(' → ').map((n,i)=>`${i?'<span class="hop-arrow">→</span>':''}<span class="hop-node">${esc(n)}</span>`).join('')
+      }</div>
+      <div class="host-meta">
+        <div class="host-meta-item"><svg viewBox="0 0 24 24" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg> ${hopTxt}</div>
+        <div class="host-meta-item" style="margin-left:auto"><span class="badge badge-muted">${esc(h.auth)}</span></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        ${h.sudo_command ? '<button class="btn btn-ghost btn-sm sudo-btn">+ sudo</button>' : ''}
+        <button class="btn btn-primary btn-sm connect-btn">▶ ${live?'Открыть':'Подключить'}</button>
+      </div>`;
+    card.style.cursor = 'pointer';
+    card.onclick = () => editHost(h);                                  // click card → settings
+    card.querySelector('.connect-btn').onclick = (e) => { e.stopPropagation(); openSession(h.id, h.name, false); };
+    const sb = card.querySelector('.sudo-btn'); if (sb) sb.onclick = (e) => { e.stopPropagation(); openSession(h.id, h.name, true); };
+    grid.appendChild(card);
+  }
+  for (const h of items) {                                             // quick access: always all hosts
+    const q = document.createElement('div'); q.className = 'nav-host'; q.style.cursor = 'pointer';
+    q.innerHTML = `<span class="status-dot ${isLive(h.id)?'online':'offline'}"></span> ${esc(h.name)}`;
+    q.onclick = () => openSession(h.id, h.name);
+    quick.appendChild(q);
+  }
+}
+
+/* Simple modal helpers for secret / host-key prompts */
+function promptModal(html, onsubmit) {
+  const back = document.createElement('div'); back.className = 'modal-backdrop'; back.style.display = 'flex';
+  back.innerHTML = `<div class="modal" style="max-width:460px">${html}</div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back._close = close;
+  back.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => { onsubmit(back); });
+  back.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { onsubmit(back, true); });
+  const inp = back.querySelector('input'); if (inp) { inp.focus(); inp.onkeydown = e => { if (e.key==='Enter') onsubmit(back); }; }
+  return back;
+}
+
+window.hop = {
+  onEvent: function(e) {
+    switch (e.ev) {
+      case 'hosts': renderHosts(e.items); break;
+      case 'output': { const s = ensureSession(e.id); s.term.write(b64ToBytes(e.data)); if (activeId === null) { showView('terminal'); setActive(e.id); } break; }
+      case 'connected': {
+        const s = ensureSession(e.id, e.id.endsWith('#sudo') ? (e.title + ' (sudo)') : e.title);
+        s.route = routeDisplay(e.route); s.live = true;
+        if (activeId === null) { showView('terminal'); setActive(e.id); }   // backend-initiated (autoconnect)
+        if (e.id === activeId) { document.getElementById('term-route').textContent = s.route; setTimeout(()=>{ s.fit.fit(); hopResize(); s.term.focus(); }, 40); }
+        if (pendingCmd[e.id]) { const cmd = pendingCmd[e.id]; delete pendingCmd[e.id]; setTimeout(()=>send({ cmd:'input', id:e.id, data: strToB64(cmd) }), 600); }
+        if (pendingXfer[e.id]) { const run = pendingXfer[e.id]; delete pendingXfer[e.id]; setTimeout(run, 700); }
+        renderTabs(); refreshHosts();
+        break;
+      }
+      case 'state': {
+        const s = sessions[e.id]; if (s) s.live = e.live;
+        if (e.id === activeId) document.getElementById('term-route').textContent = e.text;
+        renderTabs();
+        break;
+      }
+      case 'closed': { removeSession(e.id); break; }   // shell exit / drop → close tab
+      case 'commands': { commands = e.items; renderCommands(); break; }
+      case 'sftp': { if (e.key === sftpKey) renderSftp(e.path, e.entries); break; }
+      case 'sftp_err': { const l = document.getElementById('sftp-list'); if (l) l.innerHTML = '<div style="padding:8px;color:var(--color-notification)">'+esc(e.error)+'</div>'; break; }
+      case 'xfer': {
+        const now = Date.now();
+        const prev = xfers[e.id];
+        let speed = prev ? (prev.speed || 0) : 0;
+        if (prev && e.status === 'running' && typeof e.t === 'number' && typeof prev.t === 'number' && now > prev.ts) {
+          const inst = (e.t - prev.t) / ((now - prev.ts) / 1000);
+          if (inst >= 0) speed = prev.speed ? prev.speed * 0.6 + inst * 0.4 : inst;  // EMA smoothing
+        }
+        xfers[e.id] = Object.assign(prev || {}, e, { ts: now, speed });
+        renderXfers();
+        if (e.status === 'done' && e.dir === 'up' && document.getElementById('view-transfers').classList.contains('active')) sftpGo(sftpPath); // show new file
+        break;
+      }
+      case 'secret': {
+        promptModal(`
+          <div class="modal-header"><span class="modal-title">🔐 ${esc(e.prompt)}</span></div>
+          <div class="modal-body"><input class="form-input" type="password" placeholder="секрет" />
+          <div class="form-hint">Не сохраняется в профиле и не попадает в логи.</div></div>
+          <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button><button class="btn btn-primary" data-ok>OK</button></div>`,
+          (back, cancel) => { const v = back.querySelector('input').value; back._close(); send({ cmd:'secret_reply', id:e.id, value: cancel?null:v }); });
+        break;
+      }
+      case 'hostkey': {
+        promptModal(`
+          <div class="modal-header"><span class="modal-title">⚠ Ключ хоста</span></div>
+          <div class="modal-body"><p style="color:var(--color-text-muted);font-size:13px">Подтвердите отпечаток host-key (TOFU):</p>
+          <pre style="background:var(--color-surface-offset);padding:10px;border-radius:8px;font-family:var(--font-mono);font-size:12px;white-space:pre-wrap">${esc(e.fingerprint)}</pre></div>
+          <div class="modal-footer"><button class="btn btn-ghost" data-cancel style="color:var(--color-notification)">Отклонить</button><button class="btn btn-primary" data-ok>Доверять</button></div>`,
+          (back, cancel) => { back._close(); send({ cmd:'hostkey_reply', id:e.id, accept: !cancel }); });
+        break;
+      }
+      case 'toast': { console.log('toast', e.text); break; }
+    }
+  }
+};
+
+/* Open the host settings modal, prefilled, when a card is clicked. */
+/* ===================== host add / edit form ===================== */
+let editingHostId = null;
+
+function hopRow(kind, n, d) {
+  d = d || {};
+  const isTarget = kind === 'target';
+  const auth = d.auth || (isTarget ? 'key' : 'agent');
+  const opt = (v, label) => `<option value="${v}"${auth===v?' selected':''}>${label}</option>`;
+  return `
+  <div class="hop-item" data-kind="${kind}"${isTarget?' style="border-color:var(--color-primary);border-width:1.5px"':''}>
+    <div class="hop-item-header">
+      <span class="hop-badge${isTarget?' final':''}">${isTarget?'🎯':n}</span>
+      <span class="hop-label"${isTarget?' style="color:var(--color-primary);font-weight:700"':''}>${isTarget?'Целевой хост':'Jump-сервер #'+n}</span>
+      ${isTarget?'':'<button class="hop-remove" data-remove title="Удалить хоп">✕</button>'}
+    </div>
+    <div class="form-row-3">
+      <div><label class="form-label">Пользователь</label><input class="form-input form-input-mono" data-field="user" value="${esc(d.user||'')}" placeholder="root" /></div>
+      <div><label class="form-label">Порт</label><input class="form-input form-input-mono" data-field="port" value="${esc(String(d.port||22))}" placeholder="22" /></div>
+      <div><label class="form-label">Хост / IP</label><input class="form-input form-input-mono" data-field="host" value="${esc(d.host||'')}" placeholder="10.0.0.1" oninput="updateChainPreview()" /></div>
+    </div>
+    <div class="form-row" style="margin-top:var(--space-3)">
+      <div><label class="form-label">Аутентификация</label>
+        <select class="form-select" data-field="auth" onchange="authChanged(this)">${opt('key','SSH ключ')}${opt('password','Пароль')}${opt('agent','SSH Agent')}</select></div>
+      <div>
+        <div data-authfield="key"${auth==='key'?'':' style="display:none"'}><label class="form-label">Путь к ключу</label><input class="form-input form-input-mono" data-field="key" value="${esc(d.key||'')}" placeholder="~/.ssh/id_ed25519" /></div>
+        <div data-authfield="password"${auth==='password'?'':' style="display:none"'}><label class="form-label">Пароль</label><input class="form-input form-input-mono" type="password" data-field="password" value="${esc(d.password||'')}" placeholder="сохранится в ~/.hopterm" /></div>
+        <div data-authfield="agent"${auth==='agent'?'':' style="display:none"'}><label class="form-label">Способ</label><div class="form-hint" style="padding-top:9px">SSH-агент (SSH_AUTH_SOCK)</div></div>
+      </div>
+    </div>
+    ${isTarget ? `<div class="form-row" style="margin-top:var(--space-3)">
+      <div><label class="form-label">Sudo при «Подключить с sudo»</label>
+        <select class="form-select" data-field="sudo_cmd">${sudoOpt(d.sudo_command,'','— нет —')}${sudoOpt(d.sudo_command,'sudo su','sudo su')}${sudoOpt(d.sudo_command,'sudo -s','sudo -s')}${sudoOpt(d.sudo_command,'su','su')}${sudoOpt(d.sudo_command,'su root','su root')}</select></div>
+      <div><label class="form-label">Sudo пароль</label><input class="form-input form-input-mono" type="password" data-field="sudo_pw" value="${esc(d.sudo_password||'')}" placeholder="оставьте пустым — спросит в терминале" /></div>
+    </div>` : ''}
+  </div>`;
+}
+function sudoOpt(cur, v, label) { return `<option value="${v}"${(cur||'')===v?' selected':''}>${label}</option>`; }
+
+function renderHostForm(host) {
+  editingHostId = host ? host.id : null;
+  document.getElementById('addhost-title').textContent = host ? 'Настройка хоста' : 'Добавить хост';
+  document.getElementById('host-name').value = host ? host.name : '';
+  document.getElementById('host-tags').value = host && host.tags ? host.tags.join(', ') : '';
+  document.getElementById('host-delete-btn').style.display = host ? 'inline-flex' : 'none';
+  const jumps = host && host.jumps ? host.jumps : [];
+  const target = Object.assign({}, host && host.target ? host.target : {},
+    { sudo_command: host ? host.sudo_command : '', sudo_password: host ? host.sudo_password : '' });
+  let html = jumps.map((j,i)=>hopRow('jump', i+1, j)).join('');
+  html += hopRow('target', 0, target);
+  document.getElementById('hop-list').innerHTML = html;
+  attachRemovers();
+  updateChainPreview();
+}
+
+function attachRemovers() {
+  document.querySelectorAll('#hop-list [data-remove]').forEach(b => b.onclick = () => {
+    b.closest('.hop-item').remove(); renumberJumps(); updateChainPreview();
+  });
+}
+function renumberJumps() {
+  let n = 1;
+  document.querySelectorAll('#hop-list .hop-item[data-kind="jump"]').forEach(it => {
+    it.querySelector('.hop-badge').textContent = n;
+    it.querySelector('.hop-label').textContent = 'Jump-сервер #' + n; n++;
+  });
+}
+function addJump() {
+  const list = document.getElementById('hop-list');
+  const target = list.querySelector('.hop-item[data-kind="target"]');
+  const n = list.querySelectorAll('.hop-item[data-kind="jump"]').length + 1;
+  const tmp = document.createElement('template'); tmp.innerHTML = hopRow('jump', n, {}).trim();
+  list.insertBefore(tmp.content.firstElementChild, target);
+  attachRemovers(); updateChainPreview();
+}
+function addHop() { addJump(); }   // back-compat with mockup button
+
+function authChanged(sel) {
+  const item = sel.closest('.hop-item');
+  item.querySelectorAll('[data-authfield]').forEach(d => { d.style.display = (d.dataset.authfield === sel.value ? '' : 'none'); });
+}
+function readHop(item) {
+  const f = (k) => { const el = item.querySelector('[data-field="'+k+'"]'); return el ? el.value.trim() : ''; };
+  return { user: f('user'), host: f('host'), port: parseInt(f('port'))||22, auth: f('auth'), key: f('key'), password: f('password') };
+}
+function serializeHost() {
+  const items = [...document.querySelectorAll('#hop-list .hop-item')];
+  const jumps = items.filter(i=>i.dataset.kind==='jump').map(readHop);
+  const targetItem = items.find(i=>i.dataset.kind==='target');
+  const target = readHop(targetItem);
+  const sv = (k) => { const el = targetItem.querySelector('[data-field="'+k+'"]'); return el ? el.value.trim() : ''; };
+  const tags = document.getElementById('host-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  return { id: editingHostId, name: document.getElementById('host-name').value.trim(), tags, jumps, target,
+    sudo_command: sv('sudo_cmd'), sudo_password: sv('sudo_pw') };
+}
+function updateChainPreview() {
+  const h = serializeHost();
+  const nodes = [...h.jumps.filter(j=>j.host).map(j=>`${j.user||'root'}@${j.host}`)];
+  if (h.target.host) nodes.push(`${h.target.user||'root'}@${h.target.host}`);
+  const el = document.getElementById('hop-chain-preview');
+  el.innerHTML = '<span style="color:var(--color-text-faint);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Маршрут: </span>' +
+    nodes.map((n,i)=>`${i?'<span class="hop-arrow">→</span>':''}<span class="hop-node${i===nodes.length-1&&h.target.host?' final':''}">${esc(n)}</span>`).join('');
+}
+
+function openAddHost() { renderHostForm(null); showModal('add-host'); }
+function editHost(h) { renderHostForm(h); showModal('add-host'); }
+function saveHost() {
+  const h = serializeHost();
+  if (!h.name || !h.target.host) { alert('Укажите имя и хост целевого узла'); return; }
+  send({ cmd:'save_host', host: h });
+  hideModal('add-host');
+}
+function deleteHost() {
+  if (editingHostId) send({ cmd:'delete_host', id: editingHostId });
+  hideModal('add-host');
+}
+
+/* Keep the active terminal fitted to its container at all times. */
+function setupResize() {
+  const terms = document.getElementById('terms');
+  const ro = new ResizeObserver(() => {
+    const s = sessions[activeId];
+    if (s && terms.clientHeight > 0) { try { s.fit.fit(); } catch (e) {} hopResize(); }
+  });
+  ro.observe(terms);
+}
+
+window.addEventListener('DOMContentLoaded', () => { setupResize(); send({ cmd:'ready' }); send({ cmd:'cmd_list' }); });
+</script>
+</body>
+</html>

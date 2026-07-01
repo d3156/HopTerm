@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c8a92"/>
+      <stop offset="1" stop-color="#01474c"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded-square tile -->
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#bg)"/>
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#sheen)"/>
+  <rect x="16.5" y="16.5" width="223" height="223" rx="51.5" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1"/>
+
+  <!-- terminal prompt: chevron + cursor -->
+  <g fill="none" stroke="#eafcff" stroke-width="17" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="78,96 112,128 78,160"/>
+    <line x1="128" y1="162" x2="172" y2="162"/>
+  </g>
+
+  <!-- multi-hop nodes along the route -->
+  <g>
+    <line x1="74" y1="200" x2="182" y2="200" stroke="#bdeef0" stroke-opacity="0.5" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="74"  cy="200" r="11" fill="#d19900"/>
+    <circle cx="128" cy="200" r="11" fill="#eafcff"/>
+    <circle cx="182" cy="200" r="11" fill="#8fe3d6"/>
+  </g>
+</svg>

@@ -1,0 +1,16 @@
+[package]
+name = "hopterm-security"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Credentials, host-key verification and trust policy for HopTerm (spec §6.3)."
+
+[dependencies]
+hopterm-domain = { workspace = true }
+hopterm-storage = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

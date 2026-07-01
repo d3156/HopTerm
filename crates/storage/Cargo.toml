@@ -1,0 +1,15 @@
+[package]
+name = "hopterm-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "TOML-backed profile/settings/known_hosts storage for HopTerm (spec §10)."
+
+[dependencies]
+hopterm-domain = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+directories = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
