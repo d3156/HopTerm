@@ -5,7 +5,7 @@
 терминал, передаёт файлы по SFTP и запускает сохранённые команды — в одном
 приложении с современным интерфейсом.
 
-![v0.1.0-alpha](https://img.shields.io/badge/version-0.1.0--alpha-01696f) ![Rust](https://img.shields.io/badge/Rust-webview-da7101) ![License](https://img.shields.io/badge/license-MIT-437a22)
+![v0.1.1-alpha](https://img.shields.io/badge/version-0.1.1--alpha-01696f) ![Rust](https://img.shields.io/badge/Rust-webview-da7101) ![License](https://img.shields.io/badge/license-MIT-437a22)
 
 ## Возможности
 
@@ -39,7 +39,7 @@
 ### Из `.deb` (Debian/Ubuntu)
 
 ```bash
-sudo apt install ./dist/hopterm_0.1.0-1_amd64.deb
+sudo apt install ./dist/hopterm_0.1.1-1_amd64.deb
 ```
 
 `apt` подтянет зависимости (`libwebkit2gtk-4.1-0`, GTK 3). После установки

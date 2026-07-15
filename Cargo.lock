@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-logging"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "tracing",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-security"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-ssh"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "hopterm-domain",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "hopterm-domain",
@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-terminal"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alacritty_terminal",
  "hopterm-domain",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-transfer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "hopterm-domain",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "hopterm-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "async-trait",

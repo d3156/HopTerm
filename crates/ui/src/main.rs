@@ -31,6 +31,15 @@ const F_INTER_SB: &[u8] = include_bytes!("../web/vendor/Inter-SemiBold.ttf");
 const F_MONO: &[u8] = include_bytes!("../web/vendor/JetBrainsMono-Regular.ttf");
 
 fn serve(_id: wry::WebViewId, request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+    // Index is templated so the in-app version label always tracks Cargo.
+    if matches!(request.uri().path(), "/" | "/index.html") {
+        let html = INDEX.replace("{{APP_VERSION}}", env!("CARGO_PKG_VERSION"));
+        return Response::builder()
+            .header(CONTENT_TYPE, "text/html")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Cow::Owned(html.into_bytes()))
+            .unwrap();
+    }
     let (body, mime): (&'static [u8], &str) = match request.uri().path() {
         "/" | "/index.html" => (INDEX.as_bytes(), "text/html"),
         "/vendor/xterm.js" => (XTERM_JS, "application/javascript"),

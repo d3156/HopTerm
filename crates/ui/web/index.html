@@ -13,7 +13,7 @@
 @font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: url('hop://app/vendor/JetBrainsMono-Regular.ttf'); }
 ::selection { background: #4db3bf; color: #11100c; }
 #view-terminal.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-#view-terminal .content { background: #161513; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#view-terminal .content { background: var(--color-surface); flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .term-tabs { display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; }
 .term-tab { display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: var(--radius-md); font-size: var(--text-xs); color: var(--color-text-muted); background: var(--color-surface-offset); border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
 .term-tab.active { color: var(--color-primary); background: var(--color-primary-highlight); border-color: transparent; }
@@ -22,7 +22,7 @@
 .term-tab .tclose { opacity: .6; font-size: 14px; line-height: 1; }
 .term-tab .tclose:hover { opacity: 1; color: var(--color-notification); }
 #terms { flex: 1; min-height: 0; position: relative; }
-.term-pane { width: 100%; height: 100%; display: none; padding: 8px 10px; box-sizing: border-box; }
+.term-pane { width: 100%; height: 100%; display: none; padding: 4px 6px; box-sizing: border-box; }
 .term-pane.active { display: block; }
 .sftp-list { display: flex; flex-direction: column; max-height: 46vh; overflow-y: auto; }
 .sftp-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-md); cursor: pointer; }
@@ -744,7 +744,7 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
       </div>
     </nav>
     <div class="sidebar-footer">
-      <span>v0.1.0-alpha</span>
+      <span>v{{APP_VERSION}}-alpha</span>
       <span>Rust + webview</span>
     </div>
   </aside>
@@ -1163,6 +1163,11 @@ function toggleTheme() {
   const html = document.documentElement;
   const current = html.getAttribute('data-theme');
   html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  // Re-colour every open terminal to match the new app theme.
+  const t = xtermTheme();
+  for (const s of Object.values(sessions)) {
+    try { s.term.options.theme = t; s.term.refresh(0, s.term.rows - 1); } catch (e) {}
+  }
 }
 let cmdBuildType = 'exec';
 function selectCmdType(t) {
@@ -1193,6 +1198,24 @@ function updateCmdPreview() {
 
 /* ===================== HopTerm bridge ===================== */
 function send(obj) { window.ipc.postMessage(JSON.stringify(obj)); }
+/* Transient bottom-right notification (used e.g. by the 'toast' backend event). */
+function showToast(text, isErr) {
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div'); host.id = 'toast-host';
+    host.style.cssText = 'position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:9999;pointer-events:none';
+    document.body.appendChild(host);
+  }
+  const el = document.createElement('div');
+  el.textContent = text || '';
+  el.style.cssText = 'padding:10px 14px;border-radius:var(--radius-md);font-size:var(--text-sm);'
+    + 'box-shadow:var(--shadow-lg);background:var(--color-surface-2);border:1px solid '
+    + (isErr ? 'var(--color-notification);color:var(--color-notification)' : 'var(--color-border);color:var(--color-text)')
+    + ';max-width:380px;opacity:0;transition:opacity .2s';
+  host.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); }, 3400);
+}
 function b64ToBytes(b64) { const s = atob(b64); const a = new Uint8Array(s.length); for (let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
 function strToB64(s) { return btoa(unescape(encodeURIComponent(s))); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -1450,12 +1473,23 @@ function runCmd(c) {
 const sessions = {};   // id -> { term, fit, pane, title, route, live }
 let activeId = null;
 
-const XTERM_THEME = { background:'#161513', foreground:'#d0cfc8', cursor:'#d0cfc8',
+const XTERM_THEME_DARK = { background:'#161513', foreground:'#d0cfc8', cursor:'#d0cfc8',
   cursorAccent:'#161513', selectionBackground:'#4db3bf', selectionForeground:'#11100c', selectionInactiveBackground:'#3d9da877',
   black:'#161513', red:'#e06c75', green:'#98c379', yellow:'#d4a020', blue:'#61afef',
   magenta:'#c678dd', cyan:'#56b6c2', white:'#d0cfc8',
   brightBlack:'#4a4946', brightRed:'#f7768e', brightGreen:'#b9f27c', brightYellow:'#ffc777',
   brightBlue:'#82aaff', brightMagenta:'#c6a8ff', brightCyan:'#a4daff', brightWhite:'#f0efe8' };
+// Light terminal palette — tuned to stay readable on the light UI background.
+const XTERM_THEME_LIGHT = { background:'#f9f8f5', foreground:'#1e1c17', cursor:'#1e1c17',
+  cursorAccent:'#f9f8f5', selectionBackground:'#bfe0e2', selectionForeground:'#11100c', selectionInactiveBackground:'#cedcd888',
+  black:'#1e1c17', red:'#ca3431', green:'#437a22', yellow:'#a97400', blue:'#006494',
+  magenta:'#a0277b', cyan:'#0e7490', white:'#6b6a66',
+  brightBlack:'#8a8985', brightRed:'#d94f4f', brightGreen:'#5fa030', brightYellow:'#c08a00',
+  brightBlue:'#1a7fb5', brightMagenta:'#c85aa0', brightCyan:'#0e8ca0', brightWhite:'#1e1c17' };
+// Terminal theme matching the current app theme (data-theme on <html>).
+function xtermTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? XTERM_THEME_LIGHT : XTERM_THEME_DARK;
+}
 
 /* Create the xterm pane for a session if it doesn't exist yet (no IPC).
    xterm must be opened into a *visible, sized* element, so we switch to the
@@ -1470,13 +1504,25 @@ function ensureSession(id, name) {
   const host = document.createElement('div'); host.style.cssText = 'width:100%;height:100%';
   pane.appendChild(host);
   terms.appendChild(pane);
-  const term = new Terminal({ fontFamily:"'JetBrains Mono', monospace", fontSize:13, cursorBlink:true, theme: XTERM_THEME });
+  const term = new Terminal({ fontFamily:"'JetBrains Mono', monospace", fontSize:13, cursorBlink:true, theme: xtermTheme() });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
   term.open(host);            // host is visible and sized now
   try { fit.fit(); } catch (e) {}
   term.onData(d => { if (sessions[id]) send({ cmd:'input', id, data: strToB64(d) }); });
-  // Copy/paste by physical key (e.code) so it works in any keyboard layout.
   term.attachCustomKeyEventHandler((e) => {
+    // Non-Latin fix: for a plain printable non-ASCII key, don't let xterm emit
+    // it on keydown — defer to its keypress/input path so it's sent exactly
+    // once. On WebKitGTK the input method commits such a char via a separate
+    // `input` event that keydown's preventDefault can't cancel, so handling it
+    // on keydown produced a duplicate (double Cyrillic input).
+    if (e.type === 'keydown' && e.key && e.key.length === 1
+        && !e.ctrlKey && !e.altKey && !e.metaKey
+        && e.key.charCodeAt(0) > 0x7f) return false;
+    // Copy by physical key (e.code) so it works in any keyboard layout.
+    // Paste is intentionally left to xterm's native handler (Ctrl+V / right
+    // click / middle click): it reads the clipboard once and honours
+    // bracketed-paste mode. Triggering our own backend paste here as well
+    // pasted the text twice.
     if (e.type !== 'keydown' || !e.ctrlKey || e.altKey) return true;
     if (e.code === 'KeyC') {
       const sel = term.getSelection();
@@ -1485,7 +1531,6 @@ function ensureSession(id, name) {
       send({ cmd:'input', id, data: strToB64('\x03') });            // Ctrl+C w/o selection → SIGINT
       return false;
     }
-    if (e.code === 'KeyV') { send({ cmd:'paste', id }); return false; }  // paste
     return true;
   });
   sessions[id] = { term, fit, pane, title: name || id, route:'', live:false };
@@ -1600,12 +1645,14 @@ function renderHosts(items) {
         <div class="host-meta-item" style="margin-left:auto"><span class="badge badge-muted">${esc(h.auth)}</span></div>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <button class="btn btn-ghost btn-sm ext-btn" title="Открыть SSH во внешнем терминале (gnome-terminal / fly-term / xterm)">↗ Внешний</button>
         ${h.sudo_command ? '<button class="btn btn-ghost btn-sm sudo-btn">+ sudo</button>' : ''}
         <button class="btn btn-primary btn-sm connect-btn">▶ ${live?'Открыть':'Подключить'}</button>
       </div>`;
     card.style.cursor = 'pointer';
     card.onclick = () => editHost(h);                                  // click card → settings
     card.querySelector('.connect-btn').onclick = (e) => { e.stopPropagation(); openSession(h.id, h.name, false); };
+    card.querySelector('.ext-btn').onclick = (e) => { e.stopPropagation(); send({ cmd:'open_external', id: h.id }); };
     const sb = card.querySelector('.sudo-btn'); if (sb) sb.onclick = (e) => { e.stopPropagation(); openSession(h.id, h.name, true); };
     grid.appendChild(card);
   }
@@ -1686,7 +1733,7 @@ window.hop = {
           (back, cancel) => { back._close(); send({ cmd:'hostkey_reply', id:e.id, accept: !cancel }); });
         break;
       }
-      case 'toast': { console.log('toast', e.text); break; }
+      case 'toast': { showToast(e.text, e.error); break; }
     }
   }
 };

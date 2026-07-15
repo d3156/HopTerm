@@ -7,6 +7,7 @@
 //! it to the right terminal tab (multi-session).
 
 use std::collections::HashMap;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -233,6 +234,27 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                     .cloned();
                 if let Some(profile) = profile {
                     spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), sudo, id.clone());
+                }
+            }
+
+            // Reproduce the profile's hop chain as a plain `ssh` command and hand
+            // it to an external terminal emulator (gnome-terminal / fly-term / …).
+            "open_external" => {
+                let profile = profiles
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p.id.to_string() == id)
+                    .cloned();
+                match profile {
+                    Some(profile) => match open_in_external_terminal(&profile) {
+                        Ok(term) => emit(&proxy, json!({"ev":"toast",
+                            "text": format!("Открыто во внешнем терминале ({term})")})),
+                        Err(e) => emit(&proxy, json!({"ev":"toast", "error": true,
+                            "text": format!("Внешний терминал — {e}")})),
+                    },
+                    None => emit(&proxy, json!({"ev":"toast", "error": true,
+                        "text": "Хост не найден"})),
                 }
             }
 
@@ -927,6 +949,187 @@ fn profile_from_json(host: &Value) -> SessionProfile {
         color: None,
         icon: None,
     }
+}
+
+/// Build the `ssh` argv (leading "ssh" included) that reproduces this profile's
+/// hop chain for an external terminal. Jump hosts collapse into one
+/// `-J user@host:port,…` (ProxyJump); the target carries its own port and key.
+/// Stored passwords aren't placed on the command line (they'd leak into `ps`);
+/// [`open_in_external_terminal`] injects them via an `SSH_ASKPASS` helper.
+fn build_ssh_argv(profile: &SessionProfile) -> Vec<String> {
+    let mut argv = vec!["ssh".to_string()];
+    let hops = &profile.route.hops;
+    if !hops.is_empty() {
+        let chain = hops
+            .iter()
+            .map(|h| format!("{}@{}:{}", h.username, h.address, h.port))
+            .collect::<Vec<_>>()
+            .join(",");
+        argv.push("-J".into());
+        argv.push(chain);
+    }
+    let target = profile.target();
+    if target.port != 22 {
+        argv.push("-p".into());
+        argv.push(target.port.to_string());
+    }
+    if let AuthMethod::PublicKey { key_path, .. } = &target.auth_method {
+        if !key_path.is_empty() {
+            argv.push("-i".into());
+            argv.push(key_path.clone());
+        }
+    }
+    argv.push(format!("{}@{}", target.username, target.address));
+    argv
+}
+
+/// Write a throwaway `SSH_ASKPASS` helper that answers ssh's password prompts
+/// from the profile's stored credentials. `creds` is `(user@host, password)`
+/// per password-auth node; the helper matches the host in the prompt so a
+/// multi-hop chain with different passwords is handled. Lives in
+/// `$XDG_RUNTIME_DIR` (tmpfs, 0700) when available, mode 0700, and is removed by
+/// the caller shortly after. Consistent with HopTerm already storing these
+/// passwords in `~/.hopterm`.
+fn write_askpass_helper(creds: &[(String, String)]) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    let path = dir.join(format!("hopterm-askpass-{}.sh", uuid::Uuid::new_v4()));
+
+    // Single-quote for POSIX sh: wrap in '' and escape embedded quotes as '\''.
+    let sq = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let mut body = String::from(
+        "#!/bin/sh\n# HopTerm askpass (transient) — answers ssh password prompts.\np=\"$*\"\ncase \"$p\" in\n",
+    );
+    for (key, pw) in creds {
+        body.push_str(&format!("  *{}*) printf '%s\\n' {} ;;\n", sq(key), sq(pw)));
+    }
+    // All passwords identical → use it as a catch-all so unusual prompt wording
+    // still authenticates; otherwise answer nothing rather than the wrong one.
+    let distinct: std::collections::HashSet<&String> = creds.iter().map(|(_, p)| p).collect();
+    if distinct.len() == 1 {
+        body.push_str(&format!("  *) printf '%s\\n' {} ;;\n", sq(&creds[0].1)));
+    } else {
+        body.push_str("  *) printf '%s\\n' '' ;;\n");
+    }
+    body.push_str("esac\n");
+
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&path)?;
+    f.write_all(body.as_bytes())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(path)
+}
+
+/// Launch the profile's SSH session in a detached external terminal. Honours
+/// `$TERMINAL`, then tries gnome-terminal / fly-term / xterm and a few common
+/// fallbacks — each with its own "run this command" flag. Returns the terminal
+/// that was launched, or an error string if none could be started.
+fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String> {
+    let mut argv = build_ssh_argv(profile);
+
+    // Stored passwords along the chain (jumps + target). Key/agent nodes need
+    // nothing here — the whole point is to not re-prompt for what HopTerm has.
+    let creds: Vec<(String, String)> = profile
+        .route
+        .hops
+        .iter()
+        .chain(std::iter::once(profile.target()))
+        .filter_map(|n| match &n.auth_method {
+            AuthMethod::Password => n
+                .password
+                .as_ref()
+                .filter(|p| !p.is_empty())
+                .map(|p| (format!("{}@{}", n.username, n.address), p.clone())),
+            _ => None,
+        })
+        .collect();
+
+    // Feed those passwords to ssh through a transient askpass helper so nothing
+    // is re-typed. With a forced askpass ssh would also route the host-key prompt
+    // to it — accept-new avoids that and matches HopTerm's own TOFU (new host
+    // accepted, changed host rejected).
+    let mut run_argv: Vec<String> = Vec::new();
+    if !creds.is_empty() {
+        argv.push("-o".into());
+        argv.push("StrictHostKeyChecking=accept-new".into());
+        match write_askpass_helper(&creds) {
+            Ok(path) => {
+                run_argv.push("env".into());
+                run_argv.push(format!("SSH_ASKPASS={}", path.display()));
+                run_argv.push("SSH_ASKPASS_REQUIRE=force".into());
+                // Delete the helper once auth has had time to complete.
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(120));
+                    let _ = std::fs::remove_file(&path);
+                });
+            }
+            Err(_) => { /* fall back to plain ssh — it will prompt */ }
+        }
+    }
+    run_argv.extend(argv);
+
+    // (binary, flag preceding the command). "--" / "-e" / "-x" are the usual
+    // spellings; "" means the terminal takes the command as trailing args.
+    let mut candidates: Vec<(String, &str)> = Vec::new();
+    if let Ok(t) = std::env::var("TERMINAL") {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            let sep = match t.rsplit('/').next().unwrap_or(&t) {
+                "gnome-terminal" => "--",
+                "kitty" => "",
+                "xfce4-terminal" => "-x",
+                _ => "-e",
+            };
+            candidates.push((t, sep));
+        }
+    }
+    for (bin, sep) in [
+        ("gnome-terminal", "--"),
+        ("fly-term", "-e"),
+        ("xterm", "-e"),
+        ("konsole", "-e"),
+        ("xfce4-terminal", "-x"),
+        ("alacritty", "-e"),
+        ("kitty", ""),
+        ("x-terminal-emulator", "-e"),
+    ] {
+        candidates.push((bin.to_string(), sep));
+    }
+
+    let mut last_err =
+        String::from("не найден терминал (gnome-terminal / fly-term / xterm). Задайте $TERMINAL");
+    for (bin, sep) in &candidates {
+        let mut cmd = Command::new(bin);
+        if !sep.is_empty() {
+            cmd.arg(sep);
+        }
+        cmd.args(&run_argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                // Reap on window close so it never lingers as a zombie, without
+                // blocking the command loop.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(bin.clone());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => last_err = format!("{bin}: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 fn describe_state(state: &ConnectionState) -> String {
