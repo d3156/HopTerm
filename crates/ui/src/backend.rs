@@ -52,6 +52,68 @@ enum ShellCmd {
     Resize(PtySize),
 }
 
+/// A live port-forward plus the metadata the UI shows for it. Dropping `pf`
+/// (or calling `pf.stop()`) tears the tunnel down.
+struct ActiveForward {
+    pf: Box<dyn PortForward>,
+    /// `"local"` (ssh -L) or `"socks"` (ssh -D dynamic SOCKS5 proxy).
+    kind: &'static str,
+    /// Session key this forward rides on (so it can be stopped on disconnect).
+    session_key: String,
+    local_port: u16,
+    /// Empty for SOCKS forwards.
+    remote_host: String,
+    /// 0 for SOCKS forwards.
+    remote_port: u16,
+    /// Human label of the session, for display.
+    label: String,
+}
+
+type Forwards = Arc<Mutex<HashMap<String, ActiveForward>>>;
+
+fn forwards_json(forwards: &HashMap<String, ActiveForward>) -> Value {
+    Value::Array(
+        forwards
+            .iter()
+            .map(|(fid, f)| {
+                json!({
+                    "fid": fid,
+                    "kind": f.kind,
+                    "session": f.session_key,
+                    "label": f.label,
+                    "local_port": f.local_port,
+                    "remote_host": f.remote_host,
+                    "remote_port": f.remote_port,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Stop and forget every forward riding on `session_key`, then push the updated
+/// list to the UI. Called whenever a session ends — explicit disconnect OR the
+/// shell dying on its own — so a forward never outlives the connection it needs.
+fn stop_forwards_for(forwards: &Forwards, session_key: &str, proxy: &EventLoopProxy<UserEvent>) {
+    let items = {
+        let mut fw = forwards.lock().unwrap();
+        let dead: Vec<String> = fw
+            .iter()
+            .filter(|(_, f)| f.session_key == session_key)
+            .map(|(k, _)| k.clone())
+            .collect();
+        if dead.is_empty() {
+            return;
+        }
+        for k in &dead {
+            if let Some(f) = fw.remove(k) {
+                f.pf.stop();
+            }
+        }
+        forwards_json(&fw)
+    };
+    emit(proxy, json!({"ev":"forwards","items":items}));
+}
+
 fn emit(proxy: &EventLoopProxy<UserEvent>, value: Value) {
     let _ = proxy.send_event(UserEvent::Js(format!("window.hop && window.hop.onEvent({value})")));
 }
@@ -181,6 +243,8 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     // Active transfer jobs → cancel tokens.
     let transfers: Arc<Mutex<HashMap<String, CancelToken>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Active local port-forwards, keyed by a generated forward id.
+    let forwards: Forwards = Arc::new(Mutex::new(HashMap::new()));
     // Saved quick commands, persisted to ~/.hopterm/commands.json.
     let commands_path = format!(
         "{}/.hopterm/commands.json",
@@ -209,7 +273,7 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                     let profile = profiles.lock().unwrap().get(idx).cloned();
                     if let Some(profile) = profile {
                         let key = profile.id.to_string();
-                        spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), false, key);
+                        spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), false, key, forwards.clone());
                     }
                 }
             }
@@ -233,7 +297,7 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                     .find(|p| p.id.to_string() == profile_id)
                     .cloned();
                 if let Some(profile) = profile {
-                    spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), sudo, id.clone());
+                    spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), sudo, id.clone(), forwards.clone());
                 }
             }
 
@@ -314,6 +378,8 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                         let _ = mgr.close(active.id).await;
                     });
                 }
+                // Tear down any port-forwards riding on this session.
+                stop_forwards_for(&forwards, &id, &proxy);
             }
 
             "secret_reply" => {
@@ -459,6 +525,149 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 commands.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(id.as_str()));
                 save_commands(&commands_path, &commands);
                 emit(&proxy, json!({"ev":"commands","items":commands}));
+            }
+
+            // ---- local port forwarding (`ssh -L`) ----
+            "forward_list" => {
+                let items = forwards_json(&forwards.lock().unwrap());
+                emit(&proxy, json!({"ev":"forwards","items":items}));
+            }
+
+            "forward_start" => {
+                // `id` is the session key the forward rides on.
+                let session_key = id.clone();
+                let local_port = msg.get("local_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                let remote_host = msg
+                    .get("remote_host")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("127.0.0.1")
+                    .to_string();
+                let remote_port = msg.get("remote_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+
+                if remote_port == 0 {
+                    emit(&proxy, json!({"ev":"toast","error":true,"text":"Укажите удалённый порт"}));
+                    continue;
+                }
+                let (conn, label) = {
+                    let s = sessions.lock().unwrap();
+                    match s.get(&session_key) {
+                        Some(a) => (manager.connection(a.id), a.title.clone()),
+                        None => (None, String::new()),
+                    }
+                };
+                let Some(conn) = conn else {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Нет активного соединения — подключитесь к хосту"}));
+                    continue;
+                };
+                let (proxy2, forwards2, sessions2) = (proxy.clone(), forwards.clone(), sessions.clone());
+                tokio::spawn(async move {
+                    match conn
+                        .forward_local("127.0.0.1", local_port, &remote_host, remote_port)
+                        .await
+                    {
+                        Ok(pf) => {
+                            let bound = pf.local_port();
+                            let fid = uuid::Uuid::new_v4().to_string();
+                            // The session may have been torn down while we were
+                            // binding. Check membership *under the forwards lock*
+                            // (disconnect removes from `sessions` before it locks
+                            // `forwards`), so we never leave an orphaned forward.
+                            let items = {
+                                let mut fw = forwards2.lock().unwrap();
+                                if !sessions2.lock().unwrap().contains_key(&session_key) {
+                                    drop(fw);
+                                    // `pf` drops here → listener + tunnels torn down.
+                                    return;
+                                }
+                                fw.insert(
+                                    fid,
+                                    ActiveForward {
+                                        pf,
+                                        kind: "local",
+                                        session_key,
+                                        local_port: bound,
+                                        remote_host: remote_host.clone(),
+                                        remote_port,
+                                        label,
+                                    },
+                                );
+                                forwards_json(&fw)
+                            };
+                            emit(&proxy2, json!({"ev":"forwards","items":items}));
+                            emit(&proxy2, json!({"ev":"toast",
+                                "text": format!("Проброс запущен: localhost:{bound} → {remote_host}:{remote_port}")}));
+                        }
+                        Err(e) => emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text": format!("Проброс не удался: {e}")})),
+                    }
+                });
+            }
+
+            "socks_start" => {
+                // `id` is the session key the SOCKS proxy rides on.
+                let session_key = id.clone();
+                let local_port = msg.get("local_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                let (conn, label) = {
+                    let s = sessions.lock().unwrap();
+                    match s.get(&session_key) {
+                        Some(a) => (manager.connection(a.id), a.title.clone()),
+                        None => (None, String::new()),
+                    }
+                };
+                let Some(conn) = conn else {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Нет активного соединения — подключитесь к хосту"}));
+                    continue;
+                };
+                let (proxy2, forwards2, sessions2) = (proxy.clone(), forwards.clone(), sessions.clone());
+                tokio::spawn(async move {
+                    match conn.forward_socks("127.0.0.1", local_port).await {
+                        Ok(pf) => {
+                            let bound = pf.local_port();
+                            let fid = uuid::Uuid::new_v4().to_string();
+                            let items = {
+                                let mut fw = forwards2.lock().unwrap();
+                                if !sessions2.lock().unwrap().contains_key(&session_key) {
+                                    drop(fw);
+                                    return;
+                                }
+                                fw.insert(
+                                    fid,
+                                    ActiveForward {
+                                        pf,
+                                        kind: "socks",
+                                        session_key,
+                                        local_port: bound,
+                                        remote_host: String::new(),
+                                        remote_port: 0,
+                                        label,
+                                    },
+                                );
+                                forwards_json(&fw)
+                            };
+                            emit(&proxy2, json!({"ev":"forwards","items":items}));
+                            emit(&proxy2, json!({"ev":"toast",
+                                "text": format!("SOCKS-прокси запущен: socks5://127.0.0.1:{bound}")}));
+                        }
+                        Err(e) => emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text": format!("SOCKS-прокси не удался: {e}")})),
+                    }
+                });
+            }
+
+            "forward_stop" => {
+                // `id` is the forward id.
+                let items = {
+                    let mut fw = forwards.lock().unwrap();
+                    if let Some(f) = fw.remove(&id) {
+                        f.pf.stop();
+                    }
+                    forwards_json(&fw)
+                };
+                emit(&proxy, json!({"ev":"forwards","items":items}));
             }
 
             _ => {}
@@ -704,6 +913,7 @@ fn start_transfer(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_connect(
     profile: SessionProfile,
     manager: SessionManager,
@@ -711,6 +921,7 @@ fn spawn_connect(
     sessions: Sessions,
     sudo: bool,
     key: String,
+    forwards: Forwards,
 ) {
     let pid = key; // session key (profile id, or profile id + "#sudo")
     tokio::spawn(async move {
@@ -738,6 +949,7 @@ fn spawn_connect(
             proxy.clone(),
             pid.clone(),
             sessions.clone(),
+            forwards.clone(),
         ));
 
         // "Подключиться с sudo": after the shell is up, type the escalation
@@ -781,6 +993,7 @@ async fn shell_pump(
     proxy: EventLoopProxy<UserEvent>,
     pid: String,
     sessions: Sessions,
+    forwards: Forwards,
 ) {
     loop {
         tokio::select! {
@@ -791,6 +1004,8 @@ async fn shell_pump(
                 Ok(Some(_)) => {}
                 _ => {
                     sessions.lock().unwrap().remove(&pid);
+                    // The connection is gone → any forwards on it are dead too.
+                    stop_forwards_for(&forwards, &pid, &proxy);
                     emit(&proxy, json!({"ev":"closed","id":pid}));
                     break;
                 }

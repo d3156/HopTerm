@@ -63,8 +63,58 @@ pub trait SshConnection: Send + Sync {
     /// Current connection state (§8.4).
     fn state(&self) -> ConnectionState;
 
+    /// Start a **local TCP port-forward** (`ssh -L`): bind `bind_addr:local_port`
+    /// on this machine and tunnel every accepted connection through the whole
+    /// chain to `remote_host:remote_port` on the target's network. Pass
+    /// `local_port == 0` to let the OS pick a free port (read it back from the
+    /// returned handle). The forward lives until its [`PortForward::stop`] is
+    /// called or the handle is dropped.
+    ///
+    /// The default implementation reports that forwarding is unsupported, so
+    /// transports that don't implement it (e.g. the mock) need no changes.
+    async fn forward_local(
+        &self,
+        bind_addr: &str,
+        local_port: u16,
+        remote_host: &str,
+        remote_port: u16,
+    ) -> Result<Box<dyn PortForward>, SshError> {
+        let _ = (bind_addr, local_port, remote_host, remote_port);
+        Err(SshError::Other(
+            "проброс портов не поддерживается этим транспортом".into(),
+        ))
+    }
+
+    /// Start a **dynamic SOCKS5 proxy** (`ssh -D`): bind `bind_addr:local_port`
+    /// as a local SOCKS5 server and tunnel each of its CONNECT requests through
+    /// the chain to the client-chosen target. Point a browser/app at
+    /// `socks5://bind_addr:local_port` to route traffic via the target host.
+    /// `local_port == 0` lets the OS pick. Same default (unsupported) as
+    /// [`Self::forward_local`].
+    async fn forward_socks(
+        &self,
+        bind_addr: &str,
+        local_port: u16,
+    ) -> Result<Box<dyn PortForward>, SshError> {
+        let _ = (bind_addr, local_port);
+        Err(SshError::Other(
+            "SOCKS-прокси не поддерживается этим транспортом".into(),
+        ))
+    }
+
     /// Gracefully tear down the whole chain.
     async fn disconnect(&self) -> Result<(), SshError>;
+}
+
+/// A live local port-forward listener. Dropping it (or calling [`Self::stop`])
+/// stops accepting new connections and tears the tunnel down.
+pub trait PortForward: Send + Sync {
+    /// The local port actually bound — meaningful when `0` was requested and the
+    /// OS assigned one.
+    fn local_port(&self) -> u16;
+
+    /// Stop the forward: close the listener and abort in-flight tunnels.
+    fn stop(&self);
 }
 
 /// The duplex byte pipe for an interactive shell.

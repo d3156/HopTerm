@@ -22,8 +22,8 @@ use russh::keys::{decode_secret_key, ssh_key, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, Disconnect};
 use hopterm_domain::{
     AuthMethod, ConnectionObserver, ConnectionState, CredentialStore, ExecOutput, ExecStream,
-    HostKey, HostKeyDecision, HostProfile, HostVerifier, PtySize, Route, ShellChannel, SftpSession,
-    SshConnection, SshError, SshTransport,
+    HostKey, HostKeyDecision, HostProfile, HostVerifier, PortForward, PtySize, Route, ShellChannel,
+    SftpSession, SshConnection, SshError, SshTransport,
 };
 
 mod shell;
@@ -176,7 +176,7 @@ impl SshTransport for RusshTransport {
 
         observer.on_state(ConnectionState::Connected);
         Ok(Box::new(RusshConnection {
-            chain,
+            chain: Arc::new(chain),
             state: Mutex::new(ConnectionState::Connected),
         }))
     }
@@ -336,9 +336,11 @@ async fn authenticate_agent(
 }
 
 /// A connected chain. The last [`Handle`] is the target; earlier ones are kept
-/// alive only to hold the tunnels open.
+/// alive only to hold the tunnels open. The chain is behind an [`Arc`] so a
+/// port-forward accept loop can hold the target [`Handle`] alive independently
+/// of the shell/transfer channels (a [`Handle`] is not `Clone`).
 struct RusshConnection {
-    chain: Vec<Handle<CaptureHandler>>,
+    chain: Arc<Vec<Handle<CaptureHandler>>>,
     state: Mutex<ConnectionState>,
 }
 
@@ -346,6 +348,119 @@ impl RusshConnection {
     fn target(&self) -> &Handle<CaptureHandler> {
         self.chain.last().expect("chain always has a target")
     }
+}
+
+/// Handle to a running local port-forward. Aborting `abort` stops the accept
+/// loop; because its child tunnels live in a `JoinSet` owned by that loop, they
+/// are torn down too. Dropping the handle stops the forward.
+struct RusshPortForward {
+    local_port: u16,
+    abort: tokio::task::AbortHandle,
+}
+
+impl PortForward for RusshPortForward {
+    fn local_port(&self) -> u16 {
+        self.local_port
+    }
+    fn stop(&self) {
+        self.abort.abort();
+    }
+}
+
+impl Drop for RusshPortForward {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+/// Handle one SOCKS5 client connection: negotiate (no-auth), read the CONNECT
+/// request, open a `direct-tcpip` channel through the chain to the requested
+/// target, then relay bytes. Only CONNECT is supported (enough for a browser /
+/// app SOCKS proxy). Errors are reported to the client with the right reply code.
+async fn handle_socks_conn(
+    mut tcp: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
+    chain: &Arc<Vec<Handle<CaptureHandler>>>,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // --- greeting: VER, NMETHODS, METHODS... ---
+    let mut head = [0u8; 2];
+    tcp.read_exact(&mut head).await?;
+    if head[0] != 0x05 {
+        return Err(Error::new(ErrorKind::InvalidData, "not a SOCKS5 client"));
+    }
+    let mut methods = vec![0u8; head[1] as usize];
+    tcp.read_exact(&mut methods).await?;
+    if !methods.contains(&0x00) {
+        // No acceptable method (we only do no-auth).
+        tcp.write_all(&[0x05, 0xFF]).await?;
+        return Ok(());
+    }
+    tcp.write_all(&[0x05, 0x00]).await?; // choose no-auth
+
+    // --- request: VER, CMD, RSV, ATYP, ADDR, PORT ---
+    let mut req = [0u8; 4];
+    tcp.read_exact(&mut req).await?;
+    if req[0] != 0x05 {
+        return Err(Error::new(ErrorKind::InvalidData, "bad SOCKS5 request"));
+    }
+    let host = match req[3] {
+        0x01 => {
+            let mut a = [0u8; 4];
+            tcp.read_exact(&mut a).await?;
+            std::net::Ipv4Addr::from(a).to_string()
+        }
+        0x04 => {
+            let mut a = [0u8; 16];
+            tcp.read_exact(&mut a).await?;
+            std::net::Ipv6Addr::from(a).to_string()
+        }
+        0x03 => {
+            let mut len = [0u8; 1];
+            tcp.read_exact(&mut len).await?;
+            let mut dom = vec![0u8; len[0] as usize];
+            tcp.read_exact(&mut dom).await?;
+            String::from_utf8_lossy(&dom).into_owned()
+        }
+        _ => {
+            socks_reply(&mut tcp, 0x08).await?; // address type not supported
+            return Ok(());
+        }
+    };
+    let mut port_buf = [0u8; 2];
+    tcp.read_exact(&mut port_buf).await?;
+    let port = u16::from_be_bytes(port_buf);
+
+    if req[1] != 0x01 {
+        socks_reply(&mut tcp, 0x07).await?; // command not supported (only CONNECT)
+        return Ok(());
+    }
+
+    // --- open the tunnel and relay ---
+    let target = chain.last().expect("chain always has a target");
+    let channel = match target
+        .channel_open_direct_tcpip(host, port as u32, peer.ip().to_string(), peer.port() as u32)
+        .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            socks_reply(&mut tcp, 0x05).await?; // connection refused
+            return Ok(());
+        }
+    };
+    socks_reply(&mut tcp, 0x00).await?; // succeeded
+    let mut stream = channel.into_stream();
+    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+    Ok(())
+}
+
+/// Write a SOCKS5 reply with the given status code and a dummy `0.0.0.0:0` bound
+/// address (clients that only relay via CONNECT ignore the bound address).
+async fn socks_reply(tcp: &mut tokio::net::TcpStream, code: u8) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    tcp.write_all(&[0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await
 }
 
 #[async_trait]
@@ -447,6 +562,125 @@ impl SshConnection for RusshConnection {
 
     fn state(&self) -> ConnectionState {
         self.state.lock().unwrap().clone()
+    }
+
+    async fn forward_local(
+        &self,
+        bind_addr: &str,
+        local_port: u16,
+        remote_host: &str,
+        remote_port: u16,
+    ) -> Result<Box<dyn PortForward>, SshError> {
+        let listener = tokio::net::TcpListener::bind((bind_addr, local_port))
+            .await
+            .map_err(|e| SshError::Other(format!("не удалось занять {bind_addr}:{local_port} — {e}")))?;
+        let bound_port = listener
+            .local_addr()
+            .map_err(|e| SshError::Other(e.to_string()))?
+            .port();
+
+        // Share the chain (hence the target Handle) with the accept loop; it must
+        // outlive this call. Channel opens fail cleanly once the session drops.
+        let chain = self.chain.clone();
+        let remote_host = remote_host.to_string();
+
+        let task = tokio::spawn(async move {
+            // Child tunnel tasks live in a JoinSet so that aborting this accept
+            // task (via the returned handle) also aborts every in-flight tunnel.
+            let mut tunnels = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (mut tcp, peer) = match accepted {
+                            Ok(v) => v,
+                            Err(e) => {
+                                // A per-connection error (ECONNABORTED, EMFILE, …)
+                                // must not kill the whole forward — `ssh -L` keeps
+                                // listening. Back off briefly so a persistent
+                                // condition can't busy-spin, then keep accepting.
+                                tracing::debug!(error = %e, "port-forward: accept error, continuing");
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        };
+                        let chain = chain.clone();
+                        let remote_host = remote_host.clone();
+                        tunnels.spawn(async move {
+                            let target = chain.last().expect("chain always has a target");
+                            let channel = match target
+                                .channel_open_direct_tcpip(
+                                    remote_host,
+                                    remote_port as u32,
+                                    peer.ip().to_string(),
+                                    peer.port() as u32,
+                                )
+                                .await
+                            {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "port-forward: channel open failed");
+                                    return;
+                                }
+                            };
+                            let mut stream = channel.into_stream();
+                            let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+                        });
+                    }
+                    // Reap finished tunnels so the JoinSet doesn't grow unbounded.
+                    _ = tunnels.join_next(), if !tunnels.is_empty() => {}
+                }
+            }
+        });
+
+        Ok(Box::new(RusshPortForward {
+            local_port: bound_port,
+            abort: task.abort_handle(),
+        }))
+    }
+
+    async fn forward_socks(
+        &self,
+        bind_addr: &str,
+        local_port: u16,
+    ) -> Result<Box<dyn PortForward>, SshError> {
+        let listener = tokio::net::TcpListener::bind((bind_addr, local_port))
+            .await
+            .map_err(|e| SshError::Other(format!("не удалось занять {bind_addr}:{local_port} — {e}")))?;
+        let bound_port = listener
+            .local_addr()
+            .map_err(|e| SshError::Other(e.to_string()))?
+            .port();
+        let chain = self.chain.clone();
+
+        let task = tokio::spawn(async move {
+            let mut tunnels = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let (tcp, peer) = match accepted {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::debug!(error = %e, "socks: accept error, continuing");
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        };
+                        let chain = chain.clone();
+                        tunnels.spawn(async move {
+                            if let Err(e) = handle_socks_conn(tcp, peer, &chain).await {
+                                tracing::debug!(error = %e, "socks: connection ended");
+                            }
+                        });
+                    }
+                    _ = tunnels.join_next(), if !tunnels.is_empty() => {}
+                }
+            }
+        });
+
+        Ok(Box::new(RusshPortForward {
+            local_port: bound_port,
+            abort: task.abort_handle(),
+        }))
     }
 
     async fn disconnect(&self) -> Result<(), SshError> {

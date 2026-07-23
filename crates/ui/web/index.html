@@ -733,6 +733,10 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           <svg viewBox="0 0 24 24" stroke-width="1.75"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
           Передачи
         </div>
+        <div class="nav-item" data-view="forwards" onclick="showView('forwards')">
+          <svg viewBox="0 0 24 24" stroke-width="1.75"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          Проброс портов
+        </div>
         <div class="nav-item" data-view="settings" onclick="showView('settings')">
           <svg viewBox="0 0 24 24" stroke-width="1.75"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           Настройки
@@ -825,6 +829,78 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           <div class="cmd-card"><div id="sftp-list" class="sftp-list" style="padding:6px"></div></div>
         </div>
         <div id="sftp-empty" style="color:var(--color-text-muted);padding:8px">Подключитесь к хосту (вкладка «Хосты»), чтобы просматривать и скачивать файлы.</div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW: PORT FORWARDS ===== -->
+    <div id="view-forwards" class="view">
+      <div class="topbar">
+        <span class="topbar-title">Проброс портов</span>
+        <span style="color:var(--color-text-muted);font-family:var(--font-mono);font-size:var(--text-xs);margin-left:auto">локальный проброс · ssh -L</span>
+      </div>
+      <div class="content" style="max-width:780px">
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="card-header"><span class="card-title">Новый проброс</span></div>
+          <div class="card-body">
+            <div id="fwd-no-session" class="note-box" style="display:none">
+              <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              Нет активных соединений. Откройте хост на вкладке «Хосты» (появится сессия в терминале), затем вернитесь сюда.
+            </div>
+            <div class="form-group">
+              <label class="form-label">Через соединение</label>
+              <select id="fwd-session" class="form-select"></select>
+            </div>
+            <div class="form-row-3">
+              <div>
+                <label class="form-label">Локальный порт</label>
+                <input class="form-input form-input-mono" id="fwd-local" placeholder="0 = авто" value="" onkeydown="if(event.key==='Enter')addForward()" />
+              </div>
+              <div>
+                <label class="form-label">Удалённый хост</label>
+                <input class="form-input form-input-mono" id="fwd-rhost" placeholder="127.0.0.1" value="127.0.0.1" onkeydown="if(event.key==='Enter')addForward()" />
+              </div>
+              <div>
+                <label class="form-label">Удалённый порт</label>
+                <input class="form-input form-input-mono" id="fwd-rport" placeholder="напр. 5432" value="" onkeydown="if(event.key==='Enter')addForward()" />
+              </div>
+            </div>
+            <div class="form-hint" style="margin-bottom:var(--space-4)">
+              <span class="form-input-mono">localhost:локальный</span> → <span class="form-input-mono">удалённый&nbsp;хост:порт</span> в сети целевого хоста.
+              Удалённый хост <span class="form-input-mono">127.0.0.1</span> = сервис на самом целевом хосте. Несколько пробросов — добавляйте по одному.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="addForward()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Добавить проброс
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="card-header"><span class="card-title">SOCKS-прокси (динамический · ssh -D)</span></div>
+          <div class="card-body">
+            <div class="form-hint" style="margin-bottom:var(--space-3)">
+              Поднимает локальный <b>SOCKS5</b>-сервер: весь трафик приложения, направленный в него, идёт через целевой хост (как <span class="form-input-mono">ssh -D</span>). В браузере/приложении укажи прокси <span class="form-input-mono">socks5://127.0.0.1:&lt;порт&gt;</span>.
+            </div>
+            <div class="form-row">
+              <div>
+                <label class="form-label">Через соединение</label>
+                <select id="socks-session" class="form-select"></select>
+              </div>
+              <div>
+                <label class="form-label">Локальный порт</label>
+                <input class="form-input form-input-mono" id="socks-local" placeholder="1080 (0 = авто)" value="1080" onkeydown="if(event.key==='Enter')addSocks()" />
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" style="margin-top:var(--space-3)" onclick="addSocks()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Запустить SOCKS-прокси
+            </button>
+          </div>
+        </div>
+
+        <div class="nav-section-label" style="margin:6px 0 10px">Активные пробросы</div>
+        <div id="fwd-list"></div>
+        <div id="fwd-empty" style="color:var(--color-text-muted);padding:8px">Пока нет активных пробросов.</div>
       </div>
     </div>
 
@@ -1149,6 +1225,7 @@ function showView(name) {
   if (name === 'terminal') { const s = sessions[activeId]; if (s) setTimeout(() => { s.fit.fit(); hopResize(); s.term.focus(); }, 30); }
   if (name === 'transfers') openTransfers();
   if (name === 'commands') { renderCommands(); send({ cmd:'cmd_list' }); }
+  if (name === 'forwards') { renderForwardSessions(); send({ cmd:'forward_list' }); }
 }
 function showModal(name) {
   document.getElementById('modal-' + name).style.display = 'flex';
@@ -1508,16 +1585,29 @@ function ensureSession(id, name) {
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
   term.open(host);            // host is visible and sized now
   try { fit.fit(); } catch (e) {}
+  // Cyrillic fix (WebKitGTK/wry). Confirmed by tracing the raw input events: this GTK IME
+  // delivers every non-Latin char as a per-keystroke "composition" that fires
+  // compositionEND with NO compositionSTART and never clears the hidden textarea.
+  // xterm then emits the char TWICE — once correctly from its keydown
+  // textarea-diff path, and once wrongly from _finalizeComposition() on
+  // compositionend, which returns textarea.substring(dataAlreadySent) = a growing
+  // suffix ("б","бв","бвг",…). We swallow that stray compositionend before xterm's
+  // textarea listener sees it (capture-phase on an ancestor), killing only the
+  // duplicate; the correct single emit remains. ASCII never composes → unaffected.
+  //
+  // Surgical: only swallow an "end WITHOUT a matching start" (the buggy path). A
+  // GENUINE composition (CJK candidate, dead key, Compose sequence) does fire
+  // compositionstart — we let its compositionend through so xterm commits it
+  // normally.
+  let sawCompStart = false;
+  host.addEventListener('compositionstart', () => { sawCompStart = true; }, true);
+  host.addEventListener('compositionend', (e) => {
+    const genuine = sawCompStart;
+    sawCompStart = false;
+    if (!genuine) { e.stopImmediatePropagation(); e.stopPropagation(); }
+  }, true);
   term.onData(d => { if (sessions[id]) send({ cmd:'input', id, data: strToB64(d) }); });
   term.attachCustomKeyEventHandler((e) => {
-    // Non-Latin fix: for a plain printable non-ASCII key, don't let xterm emit
-    // it on keydown — defer to its keypress/input path so it's sent exactly
-    // once. On WebKitGTK the input method commits such a char via a separate
-    // `input` event that keydown's preventDefault can't cancel, so handling it
-    // on keydown produced a duplicate (double Cyrillic input).
-    if (e.type === 'keydown' && e.key && e.key.length === 1
-        && !e.ctrlKey && !e.altKey && !e.metaKey
-        && e.key.charCodeAt(0) > 0x7f) return false;
     // Copy by physical key (e.code) so it works in any keyboard layout.
     // Paste is intentionally left to xterm's native handler (Ctrl+V / right
     // click / middle click): it reads the clipboard once and honours
@@ -1677,6 +1767,72 @@ function promptModal(html, onsubmit) {
   return back;
 }
 
+/* ===================== PORT FORWARDING ===================== */
+let forwards = [];
+/* Fill the "через соединение" dropdown from the currently live sessions. */
+function renderForwardSessions() {
+  const live = Object.entries(sessions).filter(([k, s]) => s.live);
+  ['fwd-session', 'socks-session'].forEach(selId => {
+    const sel = document.getElementById(selId); if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = live.map(([k, s]) => `<option value="${esc(k)}">${esc(s.title)}</option>`).join('');
+    if (prev && live.some(([k]) => k === prev)) sel.value = prev;
+  });
+  const warn = document.getElementById('fwd-no-session');
+  if (warn) warn.style.display = live.length ? 'none' : 'flex';
+}
+function addSocks() {
+  const sel = document.getElementById('socks-session');
+  const session = sel && sel.value;
+  if (!session) { showToast('Нет активного соединения — подключитесь к хосту', true); return; }
+  const local = parseInt(document.getElementById('socks-local').value, 10) || 0;
+  send({ cmd:'socks_start', id: session, local_port: local });
+}
+function addForward() {
+  const sel = document.getElementById('fwd-session');
+  const session = sel && sel.value;
+  if (!session) { showToast('Нет активного соединения — подключитесь к хосту', true); return; }
+  const local = parseInt(document.getElementById('fwd-local').value, 10) || 0;
+  const rhost = document.getElementById('fwd-rhost').value.trim() || '127.0.0.1';
+  const rport = parseInt(document.getElementById('fwd-rport').value, 10) || 0;
+  if (!rport) { showToast('Укажите удалённый порт', true); return; }
+  send({ cmd:'forward_start', id: session, local_port: local, remote_host: rhost, remote_port: rport });
+  document.getElementById('fwd-rport').value = '';
+  document.getElementById('fwd-local').value = '';
+}
+function renderForwards() {
+  const list = document.getElementById('fwd-list');
+  const empty = document.getElementById('fwd-empty');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!forwards.length) { if (empty) empty.style.display = 'block'; return; }
+  if (empty) empty.style.display = 'none';
+  for (const f of forwards) {
+    const row = document.createElement('div');
+    row.className = 'xfer-item';
+    row.style.cssText = 'display:flex;align-items:center;gap:12px';
+    const isSocks = f.kind === 'socks';
+    const desc = isSocks
+      ? `socks5://127.0.0.1:${f.local_port}`
+      : `localhost:${f.local_port} → ${esc(f.remote_host)}:${f.remote_port}`;
+    const sub = (esc(f.label || '')) + (isSocks ? ' · SOCKS5-прокси' : ' · проброс порта');
+    row.innerHTML = `
+      <span class="status-dot online"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-family:var(--font-mono);font-size:var(--text-sm);color:var(--color-text)">${desc}</div>
+        <div style="font-size:var(--text-xs);color:var(--color-text-muted)">${sub}</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" style="color:var(--color-notification)">Стоп</button>`;
+    row.querySelector('button').onclick = () => send({ cmd:'forward_stop', id: f.fid });
+    list.appendChild(row);
+  }
+}
+/* Keep the session dropdown fresh when the forwards view is open. */
+function refreshForwardsIfActive() {
+  const v = document.getElementById('view-forwards');
+  if (v && v.classList.contains('active')) renderForwardSessions();
+}
+
 window.hop = {
   onEvent: function(e) {
     switch (e.ev) {
@@ -1689,16 +1845,17 @@ window.hop = {
         if (e.id === activeId) { document.getElementById('term-route').textContent = s.route; setTimeout(()=>{ s.fit.fit(); hopResize(); s.term.focus(); }, 40); }
         if (pendingCmd[e.id]) { const cmd = pendingCmd[e.id]; delete pendingCmd[e.id]; setTimeout(()=>send({ cmd:'input', id:e.id, data: strToB64(cmd) }), 600); }
         if (pendingXfer[e.id]) { const run = pendingXfer[e.id]; delete pendingXfer[e.id]; setTimeout(run, 700); }
-        renderTabs(); refreshHosts();
+        renderTabs(); refreshHosts(); refreshForwardsIfActive();
         break;
       }
       case 'state': {
         const s = sessions[e.id]; if (s) s.live = e.live;
         if (e.id === activeId) document.getElementById('term-route').textContent = e.text;
-        renderTabs();
+        renderTabs(); refreshForwardsIfActive();
         break;
       }
-      case 'closed': { removeSession(e.id); break; }   // shell exit / drop → close tab
+      case 'closed': { removeSession(e.id); refreshForwardsIfActive(); break; }   // shell exit / drop → close tab
+      case 'forwards': { forwards = e.items || []; renderForwards(); break; }
       case 'commands': { commands = e.items; renderCommands(); break; }
       case 'sftp': { if (e.key === sftpKey) renderSftp(e.path, e.entries); break; }
       case 'sftp_err': { const l = document.getElementById('sftp-list'); if (l) l.innerHTML = '<div style="padding:8px;color:var(--color-notification)">'+esc(e.error)+'</div>'; break; }
