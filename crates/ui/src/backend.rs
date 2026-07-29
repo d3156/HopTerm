@@ -658,6 +658,99 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 });
             }
 
+            "desktop_start" => {
+                // `id` is the session key. Shadow the remote X display with x11vnc
+                // (loopback only), tunnel it like a local forward, and open a native
+                // VNC viewer on this machine.
+                let session_key = id.clone();
+                // Empty = auto-detect on the remote. Sanitised so it is safe to
+                // splice into the shell command below.
+                let display: String = msg
+                    .get("display")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || ":._-".contains(*c))
+                    .collect();
+                let (conn, label) = {
+                    let s = sessions.lock().unwrap();
+                    match s.get(&session_key) {
+                        Some(a) => (manager.connection(a.id), a.title.clone()),
+                        None => (None, String::new()),
+                    }
+                };
+                let Some(conn) = conn else {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Нет активного соединения — подключитесь к хосту"}));
+                    continue;
+                };
+                let (proxy2, forwards2, sessions2) = (proxy.clone(), forwards.clone(), sessions.clone());
+                tokio::spawn(async move {
+                    let vnc = remote_x11vnc_cmd(&display);
+                    let conn_vnc = conn.clone();
+                    let proxy_vnc = proxy2.clone();
+                    tokio::spawn(async move {
+                        // Drain x11vnc's output. A non-zero exit comes back as an Err
+                        // carrying its stderr — surface it instead of failing silently
+                        // (that opaque failure is what reads as "server closes connection").
+                        match conn_vnc.exec_stream(&vnc).await {
+                            Ok(mut s) => loop {
+                                match s.next_chunk().await {
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => break,
+                                    Err(e) => {
+                                        emit(&proxy_vnc, json!({"ev":"toast","error":true,
+                                            "text": format!("x11vnc на хосте: {e}")}));
+                                        break;
+                                    }
+                                }
+                            },
+                            Err(e) => emit(&proxy_vnc, json!({"ev":"toast","error":true,
+                                "text": format!("x11vnc — запуск не удался: {e}")})),
+                        }
+                    });
+                    // Tunnel a free local port → remote 127.0.0.1:5900, registered as a
+                    // normal forward so disconnect tears it down with the rest.
+                    let pf = match conn.forward_local("127.0.0.1", 0, "127.0.0.1", 5900).await {
+                        Ok(pf) => pf,
+                        Err(e) => {
+                            emit(&proxy2, json!({"ev":"toast","error":true,
+                                "text": format!("Рабочий стол — проброс не удался: {e}")}));
+                            return;
+                        }
+                    };
+                    let bound = pf.local_port();
+                    let items = {
+                        let mut fw = forwards2.lock().unwrap();
+                        if !sessions2.lock().unwrap().contains_key(&session_key) {
+                            drop(fw);
+                            return;
+                        }
+                        fw.insert(
+                            uuid::Uuid::new_v4().to_string(),
+                            ActiveForward {
+                                pf,
+                                kind: "local",
+                                session_key,
+                                local_port: bound,
+                                remote_host: "127.0.0.1".to_string(),
+                                remote_port: 5900,
+                                label,
+                            },
+                        );
+                        forwards_json(&fw)
+                    };
+                    emit(&proxy2, json!({"ev":"forwards","items":items}));
+                    // Give x11vnc a moment to bind before the viewer dials in.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let text = match open_vnc_viewer(bound) {
+                        Ok(bin) => format!("Рабочий стол открыт в {bin} — 127.0.0.1:{bound}"),
+                        Err(e) => format!("VNC готов на 127.0.0.1:{bound}. {e}"),
+                    };
+                    emit(&proxy2, json!({"ev":"toast","text": text}));
+                });
+            }
+
             "forward_stop" => {
                 // `id` is the forward id.
                 let items = {
@@ -1335,6 +1428,82 @@ fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String>
             Ok(mut child) => {
                 // Reap on window close so it never lingers as a zombie, without
                 // blocking the command loop.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(bin.clone());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => last_err = format!("{bin}: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+/// Shell script run on the target to shadow the user's X session with x11vnc,
+/// bound to loopback. `display` empty = auto: DISPLAY + XAUTHORITY are read from
+/// the user's own `gnome-shell` so we attach to their real desktop, not a GDM
+/// greeter / Xwayland `:0` that a naive "first X socket" pick would grab. Fallbacks:
+/// a user-owned X socket, the X server's `-auth`, then the GDM / `$HOME` cookie.
+/// `-forever` keeps it serving across viewer reconnects; `-timeout` bounds startup;
+/// it dies when the SSH session closes. (x11vnc is X11-only — a Wayland session
+/// makes it exit with "Wayland display server detected".)
+fn remote_x11vnc_cmd(display: &str) -> String {
+    format!(
+        r#"D='{display}'; XA=''
+if [ -z "$D" ]; then
+  for p in $(pgrep -u "$(id -u)" gnome-shell 2>/dev/null); do
+    e=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)
+    D=$(printf '%s\n' "$e" | sed -n 's/^DISPLAY=//p' | head -1)
+    XA=$(printf '%s\n' "$e" | sed -n 's/^XAUTHORITY=//p' | head -1)
+    [ -n "$D" ] && break
+  done
+fi
+[ -n "$D" ] || for s in /tmp/.X11-unix/X*; do [ -O "$s" ] && D=":${{s##*/X}}" && break; done
+D=${{D:-:0}}
+[ -r "$XA" ] || XA=$(ps -u "$(id -u)" -o args= 2>/dev/null | sed -n 's/.* -auth \([^ ]*\).*/\1/p' | head -1)
+[ -r "$XA" ] || XA=/run/user/$(id -u)/gdm/Xauthority
+[ -r "$XA" ] || XA="$HOME/.Xauthority"
+x11vnc -display "$D" -auth "$XA" -localhost -rfbport 5900 -nopw -forever -shared -timeout 60 -noxdamage -quiet"#
+    )
+}
+
+/// Launch a native VNC viewer pointed at a loopback port (the SSH tunnel to the
+/// remote `x11vnc`). Returns the launched binary's name, or an error naming what
+/// to do by hand. `$VNCVIEWER` overrides the search.
+fn open_vnc_viewer(port: u16) -> Result<String, String> {
+    let uri = format!("vnc://127.0.0.1:{port}");
+    let raw = format!("127.0.0.1::{port}"); // double colon = literal port, not a display number
+    let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+    if let Ok(v) = std::env::var("VNCVIEWER") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            candidates.push((v, vec![raw.clone()]));
+        }
+    }
+    for (bin, args) in [
+        ("remmina", vec!["-c".to_string(), uri.clone()]),
+        ("vinagre", vec![uri.clone()]),
+        ("gvncviewer", vec![raw.clone()]),
+        ("vncviewer", vec![raw.clone()]), // TigerVNC / TightVNC
+        ("xtightvncviewer", vec![raw.clone()]),
+        ("xvnc4viewer", vec![raw.clone()]),
+    ] {
+        candidates.push((bin.to_string(), args));
+    }
+
+    let mut last_err = String::from(
+        "VNC-клиент не найден (remmina / vinagre / gvncviewer / vncviewer) — \
+         установите любой и подключитесь к адресу выше, или задайте $VNCVIEWER",
+    );
+    for (bin, args) in &candidates {
+        let mut cmd = Command::new(bin);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });

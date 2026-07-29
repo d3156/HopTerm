@@ -649,6 +649,9 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
 /* ===================== PAGE VIEWS ===================== */
 .view { display: none; }
 .view.active { display: block; }
+/* Forwards view fills the pane so its .content scrolls when the cards overflow. */
+#view-forwards.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#view-forwards .content { min-height: 0; }
 
 /* ===================== EMPTY STATE ===================== */
 .empty-state {
@@ -894,6 +897,29 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
             <button class="btn btn-primary btn-sm" style="margin-top:var(--space-3)" onclick="addSocks()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               Запустить SOCKS-прокси
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="card-header"><span class="card-title">Рабочий стол (VNC · x11vnc)</span></div>
+          <div class="card-body">
+            <div class="form-hint" style="margin-bottom:var(--space-3)">
+              Показывает <b>текущий рабочий стол хоста</b> со всеми открытыми программами и даёт им управлять. Поднимает <span class="form-input-mono">x11vnc</span> на дисплее хоста (только loopback), туннелирует его и открывает локальный VNC-клиент. На хосте нужен <span class="form-input-mono">x11vnc</span> (<span class="form-input-mono">apt install x11vnc</span>), на этой машине — любой VNC-клиент.
+            </div>
+            <div class="form-row">
+              <div>
+                <label class="form-label">Через соединение</label>
+                <select id="desktop-session" class="form-select"></select>
+              </div>
+              <div>
+                <label class="form-label">Дисплей (пусто = авто)</label>
+                <input class="form-input form-input-mono" id="desktop-display" placeholder="авто · :0 / :1" value="" onkeydown="if(event.key==='Enter')addDesktop()" />
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" style="margin-top:var(--space-3)" onclick="addDesktop()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="4" width="18" height="12" rx="1"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/></svg>
+              Открыть рабочий стол
             </button>
           </div>
         </div>
@@ -1772,7 +1798,7 @@ let forwards = [];
 /* Fill the "через соединение" dropdown from the currently live sessions. */
 function renderForwardSessions() {
   const live = Object.entries(sessions).filter(([k, s]) => s.live);
-  ['fwd-session', 'socks-session'].forEach(selId => {
+  ['fwd-session', 'socks-session', 'desktop-session'].forEach(selId => {
     const sel = document.getElementById(selId); if (!sel) return;
     const prev = sel.value;
     sel.innerHTML = live.map(([k, s]) => `<option value="${esc(k)}">${esc(s.title)}</option>`).join('');
@@ -1787,6 +1813,14 @@ function addSocks() {
   if (!session) { showToast('Нет активного соединения — подключитесь к хосту', true); return; }
   const local = parseInt(document.getElementById('socks-local').value, 10) || 0;
   send({ cmd:'socks_start', id: session, local_port: local });
+}
+function addDesktop() {
+  const sel = document.getElementById('desktop-session');
+  const session = sel && sel.value;
+  if (!session) { showToast('Нет активного соединения — подключитесь к хосту', true); return; }
+  const display = document.getElementById('desktop-display').value.trim();
+  send({ cmd:'desktop_start', id: session, display });
+  showToast('Поднимаю x11vnc и открываю VNC-клиент…');
 }
 function addForward() {
   const sel = document.getElementById('fwd-session');
