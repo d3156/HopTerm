@@ -3,13 +3,13 @@
 //!     cargo test -p hopterm-app --test seed -- --ignored --nocapture
 
 use hopterm_domain::*;
-use hopterm_storage::{Paths, TomlStore};
+use hopterm_storage::{JsonStore, Paths};
 use uuid::Uuid;
 
 #[test]
 #[ignore]
 fn seed_real_profile() {
-    let store = TomlStore::new(Paths::default_location());
+    let store = JsonStore::new(Paths::default_location());
     let target = HostProfile {
         id: HostId::new(Uuid::new_v4()),
         name: "live-93".into(),

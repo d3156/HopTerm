@@ -13,7 +13,7 @@ use hopterm_security::{
     InteractiveHostVerifier, KnownHostsVerifier, PromptCredentialStore, SecretPrompter,
 };
 use hopterm_ssh::RusshTransport;
-use hopterm_storage::{KnownHostsFile, Paths, TomlStore};
+use hopterm_storage::{JsonStore, KnownHostsFile, Paths};
 use uuid::Uuid;
 
 /// A blocking callback that asks the user to trust a first-contact host key.
@@ -35,7 +35,7 @@ pub struct Services {
 }
 
 impl Services {
-    /// Build the production service set: real `russh` transport, TOML store at
+    /// Build the production service set: real `russh` transport, JSON store at
     /// `~/.hopterm/`, `known_hosts` verifier and a prompting credential store.
     /// `host_key_ask`, if provided, turns first-contact keys into interactive
     /// confirmations instead of silent trust-on-first-use.
@@ -69,7 +69,7 @@ impl Services {
         settings: &AppSettings,
     ) -> Self {
         let paths = Paths::default_location();
-        let store = TomlStore::new(paths.clone()).with_persistence(settings.persist_config);
+        let store = JsonStore::new(paths.clone()).with_persistence(settings.persist_config);
         let known_hosts =
             KnownHostsFile::new(paths.known_hosts_file.clone(), settings.persist_config);
         let base = KnownHostsVerifier::new(known_hosts, settings.trust_policy);

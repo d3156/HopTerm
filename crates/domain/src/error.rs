@@ -103,6 +103,8 @@ pub enum StorageError {
     Serde(String),
     #[error("entity not found: {0}")]
     NotFound(String),
+    #[error("config crypto: {0}")]
+    Crypto(String),
 }
 
 /// Errors from the security / credential layer.

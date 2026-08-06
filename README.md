@@ -113,7 +113,7 @@ cargo build --release -p hopterm-ui
 
 | Файл | Содержимое |
 |------|-----------|
-| `config.toml` | Хосты, цепочки хопов, настройки |
+| `config.json` | Хосты, цепочки хопов, настройки; опционально шифруется PIN-кодом (Argon2id → ChaCha20-Poly1305). Старый `config.toml` мигрирует автоматически |
 | `commands.json` | Сохранённые быстрые команды |
 | `known_hosts` | Закреплённые host-key (TOFU) |
 

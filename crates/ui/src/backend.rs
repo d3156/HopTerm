@@ -225,17 +225,22 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
     let pending = Pending::default();
     let settings = AppSettings::default();
     let stored_pw: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let prompter: Arc<dyn SecretPrompter> = Arc::new(WebPrompter {
+    let web_prompter = Arc::new(WebPrompter {
         proxy: proxy.clone(),
         pending: pending.clone(),
         stored_pw: stored_pw.clone(),
     });
+    let prompter: Arc<dyn SecretPrompter> = web_prompter.clone();
     let asker = host_key_asker(proxy.clone(), pending.clone());
     let services = Services::production(prompter, Some(asker), &settings);
     let manager = SessionManager::new(services);
+    let store = manager.services().store.clone();
 
-    let mut loaded = manager.services().store.load_profiles().unwrap_or_default();
-    if loaded.is_empty() {
+    // An encrypted config can't be read until the user enters the PIN, which
+    // happens via the webview — so its profiles arrive after "ready".
+    let locked = store.config_encryption() == ConfigEncryption::Locked;
+    let mut loaded = if locked { Vec::new() } else { store.load_profiles().unwrap_or_default() };
+    if !locked && loaded.is_empty() {
         loaded = hopterm_app::demo::demo_profiles();
     }
     seed_stored_passwords(&stored_pw, &loaded);
@@ -268,6 +273,16 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
         match cmd {
             "ready" => {
                 emit(&proxy, json!({"ev":"hosts","items":host_items(&profiles.lock().unwrap())}));
+                emit_config_state(&proxy, &*store);
+                if store.config_encryption() == ConfigEncryption::Locked {
+                    spawn_config_unlock(
+                        web_prompter.clone(),
+                        store.clone(),
+                        profiles.clone(),
+                        stored_pw.clone(),
+                        proxy.clone(),
+                    );
+                }
                 if let Ok(v) = std::env::var("HOPTERM_AUTOCONNECT") {
                     let idx: usize = v.parse().unwrap_or(0);
                     let profile = profiles.lock().unwrap().get(idx).cloned();
@@ -325,7 +340,11 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
             "save_host" => {
                 if let Some(host) = msg.get("host") {
                     let profile = profile_from_json(host);
-                    let _ = manager.services().store.save_profile(&profile);
+                    if let Err(e) = store.save_profile(&profile) {
+                        emit(&proxy, json!({"ev":"toast","error":true,
+                            "text":format!("Хост не сохранён: {e}")}));
+                        continue;
+                    }
                     {
                         let mut ps = profiles.lock().unwrap();
                         match ps.iter_mut().find(|p| p.id == profile.id) {
@@ -341,7 +360,15 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
             "delete_host" => {
                 if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
                     let pid = ProfileId::new(uuid);
-                    let _ = manager.services().store.delete_profile(pid);
+                    match store.delete_profile(pid) {
+                        // NotFound is fine: demo profiles never hit the disk.
+                        Ok(()) | Err(StorageError::NotFound(_)) => {}
+                        Err(e) => {
+                            emit(&proxy, json!({"ev":"toast","error":true,
+                                "text":format!("Хост не удалён: {e}")}));
+                            continue;
+                        }
+                    }
                     {
                         let mut ps = profiles.lock().unwrap();
                         ps.retain(|p| p.id != pid);
@@ -349,6 +376,33 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                     }
                     emit(&proxy, json!({"ev":"hosts","items":host_items(&profiles.lock().unwrap())}));
                 }
+            }
+
+            // Enable (`pin` set) or disable (`pin` null) config encryption.
+            // While the store is still locked, the toggle re-asks for the PIN
+            // instead — also the recovery path after a cancelled startup prompt.
+            "config_pin" => {
+                if store.config_encryption() == ConfigEncryption::Locked {
+                    spawn_config_unlock(
+                        web_prompter.clone(),
+                        store.clone(),
+                        profiles.clone(),
+                        stored_pw.clone(),
+                        proxy.clone(),
+                    );
+                } else {
+                    let pin = msg.get("pin").and_then(|v| v.as_str());
+                    match store.set_config_pin(pin) {
+                        Ok(()) => emit(&proxy, json!({"ev":"toast","text": if pin.is_some() {
+                            "Конфиг зашифрован"
+                        } else {
+                            "Шифрование конфига отключено"
+                        }})),
+                        Err(e) => emit(&proxy,
+                            json!({"ev":"toast","error":true,"text":format!("Конфиг: {e}")})),
+                    }
+                }
+                emit_config_state(&proxy, &*store);
             }
 
             "input" => {
@@ -1110,6 +1164,46 @@ async fn shell_pump(
             }
         }
     }
+}
+
+/// Tell the UI whether the config is encrypted (settings toggle state).
+fn emit_config_state(proxy: &EventLoopProxy<UserEvent>, store: &dyn ProfileStore) {
+    let encrypted = store.config_encryption() != ConfigEncryption::Plain;
+    emit(proxy, json!({"ev":"config","encrypted":encrypted}));
+}
+
+/// Ask for the config PIN (repeating on a wrong one) until the store unlocks,
+/// then publish the real profile list.
+fn spawn_config_unlock(
+    prompter: Arc<WebPrompter>,
+    store: Arc<dyn ProfileStore>,
+    profiles: Arc<Mutex<Vec<SessionProfile>>>,
+    stored_pw: Arc<Mutex<HashMap<String, String>>>,
+    proxy: EventLoopProxy<UserEvent>,
+) {
+    tokio::spawn(async move {
+        let mut prompt = "PIN для расшифровки конфига".to_string();
+        loop {
+            let Some(pin) = prompter.ask(prompt).await else {
+                emit(&proxy, json!({"ev":"toast","error":true,
+                    "text":"Конфиг зашифрован — профили не загружены. \
+                            Ввести PIN: тумблер шифрования в Настройках"}));
+                return;
+            };
+            match store.unlock_config(&pin) {
+                Ok(true) => break,
+                Ok(false) => prompt = "Неверный PIN — попробуйте ещё раз".into(),
+                Err(e) => {
+                    emit(&proxy, json!({"ev":"toast","error":true,"text":format!("Конфиг: {e}")}));
+                    return;
+                }
+            }
+        }
+        let loaded = store.load_profiles().unwrap_or_default();
+        seed_stored_passwords(&stored_pw, &loaded);
+        *profiles.lock().unwrap() = loaded;
+        emit(&proxy, json!({"ev":"hosts","items":host_items(&profiles.lock().unwrap())}));
+    });
 }
 
 /// Rebuild the HostId -> password map from the current profiles, so connect-time

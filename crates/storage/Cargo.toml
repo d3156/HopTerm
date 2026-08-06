@@ -4,12 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "TOML-backed profile/settings/known_hosts storage for HopTerm (spec §10)."
+description = "JSON-backed profile/settings/known_hosts storage for HopTerm (spec §10)."
 
 [dependencies]
 hopterm-domain = { workspace = true }
 serde = { workspace = true }
+serde_json = "1"
 toml = { workspace = true }
+base64 = { workspace = true }
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand = "0.8"
 directories = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

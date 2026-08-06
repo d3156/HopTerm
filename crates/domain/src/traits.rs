@@ -228,6 +228,33 @@ pub trait ProfileStore: Send + Sync {
 
     fn load_settings(&self) -> Result<AppSettings, StorageError>;
     fn save_settings(&self, settings: &AppSettings) -> Result<(), StorageError>;
+
+    /// Encryption state of the backing config. Defaults describe a store
+    /// without encryption support.
+    fn config_encryption(&self) -> ConfigEncryption {
+        ConfigEncryption::Plain
+    }
+    /// Derive the key from `pin` and verify it against the encrypted config;
+    /// `Ok(false)` means a wrong PIN.
+    fn unlock_config(&self, _pin: &str) -> Result<bool, StorageError> {
+        Ok(true)
+    }
+    /// Turn config encryption on (`Some(pin)`) or off (`None`), rewriting the
+    /// config on disk.
+    fn set_config_pin(&self, _pin: Option<&str>) -> Result<(), StorageError> {
+        Ok(())
+    }
+}
+
+/// At-rest state of the config file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigEncryption {
+    /// Plain text on disk.
+    Plain,
+    /// Encrypted, key not derived yet — reads fail until [`ProfileStore::unlock_config`].
+    Locked,
+    /// Encrypted, PIN accepted — reads and writes are transparent.
+    Unlocked,
 }
 
 /// Global, non-secret application settings (mockup "Настройки", §10).

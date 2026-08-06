@@ -942,9 +942,16 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
             <div class="toggle-row">
               <div class="toggle-info">
                 <div class="toggle-label">Сохранять конфиг на диск</div>
-                <div class="toggle-desc">Шифрованный TOML-файл в ~/.rustssh/config.toml</div>
+                <div class="toggle-desc">JSON-файл в ~/.hopterm/config.json</div>
               </div>
               <label class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="toggle-label">Шифровать конфиг PIN-кодом</div>
+                <div class="toggle-desc">ChaCha20-Poly1305, ключ — Argon2id из PIN; PIN спрашивается при запуске</div>
+              </div>
+              <label class="toggle"><input type="checkbox" id="enc-toggle" onchange="onEncToggle(this)"><span class="toggle-slider"></span></label>
             </div>
             <div class="toggle-row">
               <div class="toggle-info">
@@ -974,8 +981,8 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           <div class="card-body">
             <div class="form-group">
               <label class="form-label">Директория конфигурации</label>
-              <input class="form-input form-input-mono" value="~/.rustssh/" />
-              <div class="form-hint">Файлы: config.toml, known_hosts, keys/</div>
+              <input class="form-input form-input-mono" value="~/.hopterm/" />
+              <div class="form-hint">Файлы: config.json, known_hosts, keys/</div>
             </div>
           </div>
         </div>
@@ -1793,6 +1800,39 @@ function promptModal(html, onsubmit) {
   return back;
 }
 
+/* Settings: config encryption toggle. The checkbox reflects backend state (the
+   'config' event) — here we only ask for a PIN and send the command. */
+function onEncToggle(inp) {
+  if (inp.checked) {
+    inp.checked = false; // the 'config' event confirms the real state
+    askPinAndEncrypt();
+  } else {
+    send({ cmd: 'config_pin', pin: null });
+  }
+}
+
+function askPinAndEncrypt() {
+  promptModal(`
+    <div class="modal-header"><span class="modal-title">🔐 PIN для шифрования конфига</span></div>
+    <div class="modal-body"><input class="form-input" type="password" placeholder="PIN" />
+    <div class="form-hint">Ключ выводится из PIN (Argon2id). Без PIN конфиг не расшифровать — запоминайте.</div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button><button class="btn btn-primary" data-ok>Зашифровать</button></div>`,
+    (back, cancel) => { const v = back.querySelector('input').value; back._close(); if (!cancel && v) send({ cmd:'config_pin', pin:v }); });
+}
+
+/* Startup nudge towards encryption: shown once per launch while the config is
+   still plaintext (the first 'config' event, i.e. right after "ready"). */
+let encNudgeShown = false;
+function nudgeEncrypt() {
+  promptModal(`
+    <div class="modal-header"><span class="modal-title">🔓 Конфиг не зашифрован</span></div>
+    <div class="modal-body"><p style="color:var(--color-text-muted);font-size:13px">
+    Хосты и их пароли лежат в ~/.hopterm/config.json открытым текстом.
+    Задайте PIN-код — конфиг будет шифроваться (Argon2id → ChaCha20-Poly1305).</p></div>
+    <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Позже</button><button class="btn btn-primary" data-ok>Задать PIN</button></div>`,
+    (back, cancel) => { back._close(); if (!cancel) askPinAndEncrypt(); });
+}
+
 /* ===================== PORT FORWARDING ===================== */
 let forwards = [];
 /* Fill the "через соединение" dropdown from the currently live sessions. */
@@ -1925,6 +1965,12 @@ window.hop = {
         break;
       }
       case 'toast': { showToast(e.text, e.error); break; }
+      case 'config': {
+        const t = document.getElementById('enc-toggle'); if (t) t.checked = e.encrypted;
+        // Only the startup state counts: switching encryption off by hand must not re-nag.
+        if (!encNudgeShown) { encNudgeShown = true; if (!e.encrypted) nudgeEncrypt(); }
+        break;
+      }
     }
   }
 };
