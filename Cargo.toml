@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
@@ -32,7 +32,7 @@ hopterm-transfer = { path = "crates/transfer" }
 hopterm-app = { path = "crates/app" }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "process"] }
 async-trait = "0.1"
 futures = "0.3"
 

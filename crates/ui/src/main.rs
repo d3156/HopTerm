@@ -6,6 +6,7 @@
 //! webview talks to it through a tiny JSON IPC protocol.
 
 mod backend;
+mod rsync;
 
 use std::borrow::Cow;
 

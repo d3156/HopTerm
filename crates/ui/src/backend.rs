@@ -45,6 +45,9 @@ struct Active {
     read_abort: tokio::task::AbortHandle,
     title: String,
     route: String,
+    /// The profile this session was opened from — rsync downloads rebuild the
+    /// same hop chain with an external ssh.
+    profile: SessionProfile,
 }
 
 enum ShellCmd {
@@ -114,7 +117,7 @@ fn stop_forwards_for(forwards: &Forwards, session_key: &str, proxy: &EventLoopPr
     emit(proxy, json!({"ev":"forwards","items":items}));
 }
 
-fn emit(proxy: &EventLoopProxy<UserEvent>, value: Value) {
+pub(crate) fn emit(proxy: &EventLoopProxy<UserEvent>, value: Value) {
     let _ = proxy.send_event(UserEvent::Js(format!("window.hop && window.hop.onEvent({value})")));
 }
 fn b64(bytes: &[u8]) -> String {
@@ -533,16 +536,35 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                     }
                     None => download_dir(),
                 };
-                if is_glob(&remote) {
-                    // SFTP has no glob — expand the pattern client-side and fetch
-                    // every matching file into the destination folder.
-                    start_glob_download(&sessions, &manager, &proxy, &transfers, &id, dir, remote);
+                let Some(profile) = sessions.lock().unwrap().get(&id).map(|a| a.profile.clone())
+                else {
+                    emit(&proxy, json!({"ev":"sftp_err","key":id,"error":"нет активного соединения"}));
+                    continue;
+                };
+                // Downloads go over a local rsync (resume + auto-retry); the
+                // SFTP paths below remain the fallback when the rsync road is
+                // closed (no rsync, external ssh can't authenticate...).
+                // rsync expands globs remotely itself.
+                let local = if is_glob(&remote) {
+                    dir.clone()
                 } else {
-                    let local = format!("{}/{name}", dir.trim_end_matches('/'));
-                    start_transfer(
-                        &sessions, &manager, &proxy, &transfers, &id, "down", local, remote,
-                    );
-                }
+                    format!("{}/{name}", dir.trim_end_matches('/'))
+                };
+                let fallback: Box<dyn FnOnce(String) + Send> = {
+                    let (sessions, manager, proxy, transfers) =
+                        (sessions.clone(), manager.clone(), proxy.clone(), transfers.clone());
+                    let (key, dir, local, remote) = (id.clone(), dir, local.clone(), remote.clone());
+                    Box::new(move |reason: String| {
+                        emit(&proxy, json!({"ev":"toast","error":false,
+                            "text":format!("{reason} — скачивание по SFTP (без докачки)")}));
+                        if is_glob(&remote) {
+                            start_glob_download(&sessions, &manager, &proxy, &transfers, &key, dir, remote);
+                        } else {
+                            start_transfer(&sessions, &manager, &proxy, &transfers, &key, "down", local, remote);
+                        }
+                    })
+                };
+                crate::rsync::spawn_download(proxy.clone(), transfers.clone(), profile, remote, local, fallback);
             }
 
             "xfer_cancel" => {
@@ -1125,6 +1147,7 @@ fn spawn_connect(
                 read_abort: handle.abort_handle(),
                 title: profile.display_name.clone(),
                 route: route.clone(),
+                profile: profile.clone(),
             },
         );
         emit(
@@ -1358,7 +1381,7 @@ fn profile_from_json(host: &Value) -> SessionProfile {
 /// `-J user@host:port,…` (ProxyJump); the target carries its own port and key.
 /// Stored passwords aren't placed on the command line (they'd leak into `ps`);
 /// [`open_in_external_terminal`] injects them via an `SSH_ASKPASS` helper.
-fn build_ssh_argv(profile: &SessionProfile) -> Vec<String> {
+pub(crate) fn build_ssh_argv(profile: &SessionProfile) -> Vec<String> {
     let mut argv = vec!["ssh".to_string()];
     let hops = &profile.route.hops;
     if !hops.is_empty() {
@@ -1392,7 +1415,7 @@ fn build_ssh_argv(profile: &SessionProfile) -> Vec<String> {
 /// `$XDG_RUNTIME_DIR` (tmpfs, 0700) when available, mode 0700, and is removed by
 /// the caller shortly after. Consistent with HopTerm already storing these
 /// passwords in `~/.hopterm`.
-fn write_askpass_helper(creds: &[(String, String)]) -> std::io::Result<std::path::PathBuf> {
+pub(crate) fn write_askpass_helper(creds: &[(String, String)]) -> std::io::Result<std::path::PathBuf> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -1431,16 +1454,11 @@ fn write_askpass_helper(creds: &[(String, String)]) -> std::io::Result<std::path
     Ok(path)
 }
 
-/// Launch the profile's SSH session in a detached external terminal. Honours
-/// `$TERMINAL`, then tries gnome-terminal / fly-term / xterm and a few common
-/// fallbacks — each with its own "run this command" flag. Returns the terminal
-/// that was launched, or an error string if none could be started.
-fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String> {
-    let mut argv = build_ssh_argv(profile);
-
-    // Stored passwords along the chain (jumps + target). Key/agent nodes need
-    // nothing here — the whole point is to not re-prompt for what HopTerm has.
-    let creds: Vec<(String, String)> = profile
+/// Stored passwords along the chain (jumps + target) as `(user@host, password)`
+/// pairs for the askpass helper. Key/agent nodes need nothing here — the whole
+/// point is to not re-prompt for what HopTerm has.
+pub(crate) fn password_creds(profile: &SessionProfile) -> Vec<(String, String)> {
+    profile
         .route
         .hops
         .iter()
@@ -1453,7 +1471,16 @@ fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String>
                 .map(|p| (format!("{}@{}", n.username, n.address), p.clone())),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// Launch the profile's SSH session in a detached external terminal. Honours
+/// `$TERMINAL`, then tries gnome-terminal / fly-term / xterm and a few common
+/// fallbacks — each with its own "run this command" flag. Returns the terminal
+/// that was launched, or an error string if none could be started.
+fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String> {
+    let mut argv = build_ssh_argv(profile);
+    let creds = password_creds(profile);
 
     // Feed those passwords to ssh through a transient askpass helper so nothing
     // is re-typed. With a forced askpass ssh would also route the host-key prompt

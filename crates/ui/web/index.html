@@ -1295,7 +1295,7 @@ function buildCommandText(type) {
   const hn = cmdHostName(val('cmd-host') || (document.getElementById('cmd-host')||{}).value);
   if (type === 'exec')     return val('cmd-exec-text');
   if (type === 'pipeline') return (document.getElementById('cmd-pipe-text')||{value:''}).value.split('\n').map(s=>s.trim()).filter(Boolean).join('\n');
-  if (type === 'download') { const s = val('cmd-dl-src'), d = val('cmd-dl-dst') || '~/Downloads'; return `# скачать по SFTP с прогрессом\nsftp ${hn}:${s||'/path/on/host'} → ${d}`; }
+  if (type === 'download') { const s = val('cmd-dl-src'), d = val('cmd-dl-dst') || '~/Downloads'; return `# скачать по rsync (докачка при обрыве)\nrsync ${hn}:${s||'/path/on/host'} → ${d}`; }
   if (type === 'upload')   { const s = val('cmd-ul-src'), d = val('cmd-ul-dst'); return `# загрузить по SFTP с прогрессом\nsftp ${s||'/local/file'} → ${hn}:${d||'/remote/dir/'}`; }
   return '';
 }
@@ -1398,13 +1398,14 @@ function renderXfers() {
         <div class="progress-row"><span class="progress-filename">${esc(x.name)}</span><span class="progress-info">${human(t)} / ${human(total)}</span></div>
         <div class="progress-bar-bg"><div class="progress-bar-fill${done?' done':''}" style="width:${pct}%${fill}"></div></div>
       </div>
+      ${running && x.note ? `<div style="color:var(--color-text-muted);font-size:var(--text-xs);margin-top:8px;font-family:var(--font-mono)">${esc(x.note)}</div>` : ''}
       ${err ? `<div style="color:var(--color-notification);font-size:var(--text-xs);margin-top:8px;font-family:var(--font-mono)">${esc(x.error||'ошибка передачи')}</div>` : `
       <div class="transfer-stats">
         <div class="stat-item"><span class="stat-value">${speed}</span><span class="stat-label">Скорость</span></div>
         <div class="stat-item"><span class="stat-value">${eta}</span><span class="stat-label">Осталось</span></div>
         <div class="stat-item"><span class="stat-value">${human(t)}</span><span class="stat-label">Передано</span></div>
         <div class="stat-item"><span class="stat-value">${x.dir==='up'?'⤴ upload':'⤵ download'}</span><span class="stat-label">Направление</span></div>
-        <div class="stat-item"><span class="stat-value">SFTP</span><span class="stat-label">Протокол</span></div>
+        <div class="stat-item"><span class="stat-value">${esc(x.proto||'SFTP')}</span><span class="stat-label">Протокол</span></div>
       </div>`}
     </div>`;
   }).join('');
@@ -1934,6 +1935,7 @@ window.hop = {
       case 'sftp': { if (e.key === sftpKey) renderSftp(e.path, e.entries); break; }
       case 'sftp_err': { const l = document.getElementById('sftp-list'); if (l) l.innerHTML = '<div style="padding:8px;color:var(--color-notification)">'+esc(e.error)+'</div>'; break; }
       case 'xfer': {
+        if (e.status === 'gone') { delete xfers[e.id]; renderXfers(); break; }  // job superseded (rsync -> SFTP fallback)
         const now = Date.now();
         const prev = xfers[e.id];
         let speed = prev ? (prev.speed || 0) : 0;
@@ -1942,6 +1944,7 @@ window.hop = {
           if (inst >= 0) speed = prev.speed ? prev.speed * 0.6 + inst * 0.4 : inst;  // EMA smoothing
         }
         xfers[e.id] = Object.assign(prev || {}, e, { ts: now, speed });
+        xfers[e.id].note = e.note;  // absent = clear the retry note
         renderXfers();
         if (e.status === 'done' && e.dir === 'up' && document.getElementById('view-transfers').classList.contains('active')) sftpGo(sftpPath); // show new file
         break;
