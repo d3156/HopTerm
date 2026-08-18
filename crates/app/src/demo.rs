@@ -16,6 +16,7 @@ fn host(name: &str, user: &str, addr: &str, port: u16, auth: AuthMethod) -> Host
         tags: vec![],
         color: None,
         icon: None,
+        hop_ref: None,
     }
 }
 

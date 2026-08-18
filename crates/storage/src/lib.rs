@@ -419,6 +419,7 @@ mod tests {
             tags: vec!["production".into()],
             color: None,
             icon: None,
+            hop_ref: None,
         };
         SessionProfile {
             id: ProfileId::new(Uuid::nil()),

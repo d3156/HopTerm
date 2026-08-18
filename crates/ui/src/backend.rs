@@ -320,33 +320,37 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 let sudo = msg.get("sudo").and_then(|v| v.as_bool()).unwrap_or(false);
                 // `id` is the session key; for sudo it carries a `#sudo` suffix.
                 let profile_id = id.strip_suffix("#sudo").unwrap_or(&id).to_string();
-                let profile = profiles
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|p| p.id.to_string() == profile_id)
-                    .cloned();
-                if let Some(profile) = profile {
-                    spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), sudo, id.clone(), forwards.clone());
+                let profile = {
+                    let ps = profiles.lock().unwrap();
+                    ps.iter().find(|p| p.id.to_string() == profile_id).map(|p| resolve_profile(p, &ps))
+                };
+                match profile {
+                    Some(Ok(profile)) => {
+                        spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), sudo, id.clone(), forwards.clone());
+                    }
+                    Some(Err(e)) => {
+                        emit(&proxy, json!({"ev":"state","id":id,"text":format!("ошибка: {e}"),"live":false}));
+                    }
+                    None => {}
                 }
             }
 
             // Reproduce the profile's hop chain as a plain `ssh` command and hand
             // it to an external terminal emulator (gnome-terminal / fly-term / …).
             "open_external" => {
-                let profile = profiles
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|p| p.id.to_string() == id)
-                    .cloned();
+                let profile = {
+                    let ps = profiles.lock().unwrap();
+                    ps.iter().find(|p| p.id.to_string() == id).map(|p| resolve_profile(p, &ps))
+                };
                 match profile {
-                    Some(profile) => match open_in_external_terminal(&profile) {
+                    Some(Ok(profile)) => match open_in_external_terminal(&profile) {
                         Ok(term) => emit(&proxy, json!({"ev":"toast",
                             "text": format!("Открыто во внешнем терминале ({term})")})),
                         Err(e) => emit(&proxy, json!({"ev":"toast", "error": true,
                             "text": format!("Внешний терминал — {e}")})),
                     },
+                    Some(Err(e)) => emit(&proxy, json!({"ev":"toast", "error": true,
+                        "text": format!("Маршрут: {e}")})),
                     None => emit(&proxy, json!({"ev":"toast", "error": true,
                         "text": "Хост не найден"})),
                 }
@@ -355,6 +359,20 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
             "save_host" => {
                 if let Some(host) = msg.get("host") {
                     let profile = profile_from_json(host);
+                    // Reject dangling/cyclic hop references at save time, not
+                    // at the first connect attempt.
+                    let ref_err = {
+                        let ps = profiles.lock().unwrap();
+                        let mut future: Vec<SessionProfile> =
+                            ps.iter().filter(|p| p.id != profile.id).cloned().collect();
+                        future.push(profile.clone());
+                        resolve_profile(&profile, &future).err()
+                    };
+                    if let Some(e) = ref_err {
+                        emit(&proxy, json!({"ev":"toast","error":true,
+                            "text":format!("Хост не сохранён: {e}")}));
+                        continue;
+                    }
                     if let Err(e) = store.save_profile(&profile) {
                         emit(&proxy, json!({"ev":"toast","error":true,
                             "text":format!("Хост не сохранён: {e}")}));
@@ -375,6 +393,21 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
             "delete_host" => {
                 if let Ok(uuid) = uuid::Uuid::parse_str(&id) {
                     let pid = ProfileId::new(uuid);
+                    // Referential integrity: a host other targets hop through
+                    // must not silently disappear from under them.
+                    let dependents: Vec<String> = profiles
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|p| p.route.hops.iter().any(|h| h.hop_ref == Some(pid)))
+                        .map(|p| p.display_name.clone())
+                        .collect();
+                    if !dependents.is_empty() {
+                        emit(&proxy, json!({"ev":"toast","error":true,
+                            "text":format!("Хост используется как хоп у: {} — сначала уберите ссылки",
+                                           dependents.join(", "))}));
+                        continue;
+                    }
                     match store.delete_profile(pid) {
                         // NotFound is fine: demo profiles never hit the disk.
                         Ok(()) | Err(StorageError::NotFound(_)) => {}
@@ -1278,7 +1311,51 @@ fn seed_stored_passwords(map: &Mutex<HashMap<String, String>>, profiles: &[Sessi
     }
 }
 
+/// Materialize a profile's route: every reference hop is replaced by the
+/// referenced profile's resolved chain (its hops, then its target), so the
+/// transport, ssh argv and password seeding see only concrete nodes.
+fn resolve_profile(profile: &SessionProfile, all: &[SessionProfile]) -> Result<SessionProfile, String> {
+    let mut hops = Vec::new();
+    let mut path = vec![profile.id];
+    for hop in &profile.route.hops {
+        expand_hop(hop, all, &mut path, &mut hops)?;
+    }
+    let mut resolved = profile.clone();
+    resolved.route.hops = hops;
+    Ok(resolved)
+}
+
+/// `path` is the chain of profiles currently being expanded — a reference back
+/// into it means an infinite chain, not a valid route.
+fn expand_hop(
+    hop: &HostProfile,
+    all: &[SessionProfile],
+    path: &mut Vec<ProfileId>,
+    out: &mut Vec<HostProfile>,
+) -> Result<(), String> {
+    let Some(rid) = hop.hop_ref else {
+        out.push(hop.clone());
+        return Ok(());
+    };
+    let Some(referenced) = all.iter().find(|p| p.id == rid) else {
+        return Err("хоп ссылается на удалённый хост".into());
+    };
+    if path.contains(&rid) {
+        return Err(format!("цикл ссылок хопов через «{}»", referenced.display_name));
+    }
+    path.push(rid);
+    for h in &referenced.route.hops {
+        expand_hop(h, all, path, out)?;
+    }
+    out.push(referenced.route.target.clone());
+    path.pop();
+    Ok(())
+}
+
 fn node_json(h: &HostProfile) -> Value {
+    if let Some(rid) = h.hop_ref {
+        return json!({"ref": rid.to_string()});
+    }
     let (auth, key) = match &h.auth_method {
         AuthMethod::Password => ("password", String::new()),
         AuthMethod::Agent => ("agent", String::new()),
@@ -1293,13 +1370,17 @@ fn host_items(profiles: &[SessionProfile]) -> Value {
         profiles
             .iter()
             .map(|p| {
+                // Badge and breadcrumb show the materialized route; a broken
+                // reference falls back to the stored one (connect surfaces
+                // the error). `jumps` stays as stored — it feeds the editor.
+                let resolved = resolve_profile(p, profiles).unwrap_or_else(|_| p.clone());
                 json!({
                     "id": p.id.to_string(),
                     "name": p.display_name,
                     "endpoint": p.target().endpoint(),
-                    "hops": p.route.hops.len(),
+                    "hops": resolved.route.hops.len(),
                     "auth": p.target().auth_method.label(),
-                    "route": p.route.breadcrumb(),
+                    "route": resolved.route.breadcrumb(),
                     "tags": p.tags,
                     "sudo_command": p.sudo.command,
                     "sudo_password": p.sudo.password,
@@ -1312,8 +1393,14 @@ fn host_items(profiles: &[SessionProfile]) -> Value {
 }
 
 /// Build a [`HostProfile`] node from a `{user,host,port,auth,key}` JSON object.
+/// A `{ref: <profile-id>}` object becomes a reference hop (see `hop_ref`).
 fn node_from_json(v: &Value) -> HostProfile {
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let hop_ref = v
+        .get("ref")
+        .and_then(|x| x.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .map(ProfileId::new);
     let host = s("host");
     let auth = match v.get("auth").and_then(|x| x.as_str()).unwrap_or("agent") {
         "password" => AuthMethod::Password,
@@ -1350,6 +1437,7 @@ fn node_from_json(v: &Value) -> HostProfile {
         tags: vec![],
         color: None,
         icon: None,
+        hop_ref,
     }
 }
 
@@ -1366,7 +1454,10 @@ fn profile_from_json(host: &Value) -> SessionProfile {
         .and_then(|x| x.as_array())
         .map(|a| {
             a.iter()
-                .filter(|j| !j.get("host").and_then(|h| h.as_str()).unwrap_or("").is_empty())
+                .filter(|j| {
+                    !j.get("host").and_then(|h| h.as_str()).unwrap_or("").is_empty()
+                        || j.get("ref").and_then(|r| r.as_str()).is_some()
+                })
                 .map(node_from_json)
                 .collect()
         })
@@ -1684,6 +1775,74 @@ fn describe_state(state: &ConnectionState) -> String {
         ConnectionState::Failed { hop_index, message } => {
             format!("сбой на хопе {}: {message}", hop_index + 1)
         }
+    }
+}
+
+#[cfg(test)]
+mod hop_ref_tests {
+    use super::*;
+
+    fn node(addr: &str) -> HostProfile {
+        HostProfile {
+            id: HostId::new(uuid::Uuid::new_v4()),
+            name: addr.into(),
+            address: addr.into(),
+            port: 22,
+            username: "root".into(),
+            auth_method: AuthMethod::Agent,
+            password: None,
+            tags: vec![],
+            color: None,
+            icon: None,
+            hop_ref: None,
+        }
+    }
+
+    fn ref_hop(to: ProfileId) -> HostProfile {
+        HostProfile { hop_ref: Some(to), ..node("") }
+    }
+
+    fn profile(name: &str, hops: Vec<HostProfile>, target: &str) -> SessionProfile {
+        SessionProfile {
+            id: ProfileId::new(uuid::Uuid::new_v4()),
+            display_name: name.into(),
+            route: Route { hops, target: node(target), policy: RoutePolicy::DirectTcpIp },
+            terminal_preferences: Default::default(),
+            transfer_preferences: Default::default(),
+            tags: vec![],
+            sudo: Default::default(),
+            color: None,
+            icon: None,
+        }
+    }
+
+    #[test]
+    fn expands_nested_reference_chains() {
+        let gate = profile("gate", vec![node("bastion")], "gate.example");
+        let app = profile("app", vec![ref_hop(gate.id)], "app.example");
+        let all = vec![gate.clone(), app.clone()];
+
+        let r = resolve_profile(&app, &all).unwrap();
+        let addrs: Vec<&str> = r.route.hops.iter().map(|h| h.address.as_str()).collect();
+        // the referenced host contributes its own chain, then itself
+        assert_eq!(addrs, ["bastion", "gate.example"]);
+        assert_eq!(r.route.target.address, "app.example");
+
+        // an inline hop passes through untouched
+        let plain = profile("plain", vec![node("direct")], "t");
+        assert_eq!(resolve_profile(&plain, &all).unwrap().route.hops[0].address, "direct");
+    }
+
+    #[test]
+    fn rejects_cycles_and_dangling_refs() {
+        let mut a = profile("a", vec![], "a.example");
+        let b = profile("b", vec![ref_hop(a.id)], "b.example");
+        a.route.hops = vec![ref_hop(b.id)];
+        let all = vec![a.clone(), b.clone()];
+        assert!(resolve_profile(&a, &all).unwrap_err().contains("цикл"));
+
+        let dangling = profile("d", vec![ref_hop(ProfileId::new(uuid::Uuid::new_v4()))], "t");
+        assert!(resolve_profile(&dangling, &all).is_err());
     }
 }
 

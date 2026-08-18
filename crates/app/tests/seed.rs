@@ -24,6 +24,7 @@ fn seed_real_profile() {
         tags: vec!["lan".into()],
         color: None,
         icon: None,
+        hop_ref: None,
     };
     let profile = SessionProfile {
         id: ProfileId::new(Uuid::new_v4()),

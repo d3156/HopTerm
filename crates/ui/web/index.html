@@ -1026,6 +1026,7 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
       <div class="note-box">
         <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         Хопы выполняются последовательно. Последний — целевой хост. Каждый предыдущий — jump-сервер (ProxyJump).
+        Хоп можно выбрать из уже добавленных хостов — реквизиты и его собственная цепочка возьмутся оттуда.
       </div>
 
       <div class="hop-list" id="hop-list">
@@ -1982,6 +1983,19 @@ window.hop = {
 /* ===================== host add / edit form ===================== */
 let editingHostId = null;
 
+/* Selector "this hop is a saved host": stores a reference instead of copied
+   credentials, so the hop's password/key is edited in one place. */
+function refSelect(cur) {
+  const opts = lastHosts.filter(h => h.id !== editingHostId)
+    .map(h => `<option value="${esc(h.id)}"${cur===h.id?' selected':''}>${esc(h.name)}</option>`).join('');
+  return `<div style="margin-bottom:var(--space-3)"><label class="form-label">Хоп</label>
+    <select class="form-select" data-field="ref" onchange="refChanged(this)">
+      <option value="">— свои реквизиты —</option>${opts}</select></div>`;
+}
+function refChanged(sel) {
+  sel.closest('.hop-item').querySelector('[data-own]').style.display = sel.value ? 'none' : '';
+  updateChainPreview();
+}
 function hopRow(kind, n, d) {
   d = d || {};
   const isTarget = kind === 'target';
@@ -1994,6 +2008,8 @@ function hopRow(kind, n, d) {
       <span class="hop-label"${isTarget?' style="color:var(--color-primary);font-weight:700"':''}>${isTarget?'Целевой хост':'Jump-сервер #'+n}</span>
       ${isTarget?'':'<button class="hop-remove" data-remove title="Удалить хоп">✕</button>'}
     </div>
+    ${isTarget?'':refSelect(d.ref)}
+    <div data-own${d.ref?' style="display:none"':''}>
     <div class="form-row-3">
       <div><label class="form-label">Пользователь</label><input class="form-input form-input-mono" data-field="user" value="${esc(d.user||'')}" placeholder="root" /></div>
       <div><label class="form-label">Порт</label><input class="form-input form-input-mono" data-field="port" value="${esc(String(d.port||22))}" placeholder="22" /></div>
@@ -2013,6 +2029,7 @@ function hopRow(kind, n, d) {
         <select class="form-select" data-field="sudo_cmd">${sudoOpt(d.sudo_command,'','— нет —')}${sudoOpt(d.sudo_command,'sudo su','sudo su')}${sudoOpt(d.sudo_command,'sudo -s','sudo -s')}${sudoOpt(d.sudo_command,'su','su')}${sudoOpt(d.sudo_command,'su root','su root')}</select></div>
       <div><label class="form-label">Sudo пароль</label><input class="form-input form-input-mono" type="password" data-field="sudo_pw" value="${esc(d.sudo_password||'')}" placeholder="оставьте пустым — спросит в терминале" /></div>
     </div>` : ''}
+    </div>
   </div>`;
 }
 function sudoOpt(cur, v, label) { return `<option value="${v}"${(cur||'')===v?' selected':''}>${label}</option>`; }
@@ -2061,6 +2078,8 @@ function authChanged(sel) {
 }
 function readHop(item) {
   const f = (k) => { const el = item.querySelector('[data-field="'+k+'"]'); return el ? el.value.trim() : ''; };
+  const ref = f('ref');
+  if (ref) return { ref };
   return { user: f('user'), host: f('host'), port: parseInt(f('port'))||22, auth: f('auth'), key: f('key'), password: f('password') };
 }
 function serializeHost() {
@@ -2075,7 +2094,8 @@ function serializeHost() {
 }
 function updateChainPreview() {
   const h = serializeHost();
-  const nodes = [...h.jumps.filter(j=>j.host).map(j=>`${j.user||'root'}@${j.host}`)];
+  const nodes = [...h.jumps.filter(j=>j.host||j.ref).map(j=>
+    j.ref ? ((lastHosts.find(x=>x.id===j.ref)||{}).name || '?') : `${j.user||'root'}@${j.host}`)];
   if (h.target.host) nodes.push(`${h.target.user||'root'}@${h.target.host}`);
   const el = document.getElementById('hop-chain-preview');
   el.innerHTML = '<span style="color:var(--color-text-faint);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Маршрут: </span>' +

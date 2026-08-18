@@ -100,6 +100,12 @@ pub struct HostProfile {
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// When set, this hop is a reference to another saved profile: connecting
+    /// resolves it into that profile's full chain (its hops, then its target),
+    /// so the referenced host's credentials live in one place. The other
+    /// fields of a reference hop are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop_ref: Option<ProfileId>,
 }
 
 impl HostProfile {

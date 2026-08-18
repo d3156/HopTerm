@@ -37,6 +37,7 @@ fn node(host: &str, auth: AuthMethod) -> HostProfile {
         tags: vec![],
         color: None,
         icon: None,
+        hop_ref: None,
     }
 }
 
