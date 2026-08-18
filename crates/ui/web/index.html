@@ -771,6 +771,10 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           <svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Экспорт
         </button>
+        <button class="btn btn-ghost btn-sm" onclick="openImportHosts()">
+          <svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Импорт
+        </button>
         <button class="btn btn-primary btn-sm" onclick="openAddHost()">
           <svg viewBox="0 0 24 24" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Добавить хост
@@ -2272,6 +2276,27 @@ function openExportHosts() {
         const pin = back.querySelector('[data-pin]').value;
         if (!pin) { back.querySelector('[data-pin]').focus(); return; }
         if (ids.length) send({ cmd:'export_hosts', ids, pin });
+      }
+      back._close();
+    });
+}
+
+/* Import a config-shaped file with merge: same id updates, new id adds. */
+function openImportHosts() {
+  promptModal(`
+    <div class="modal-header"><span class="modal-title">Импорт хостов</span></div>
+    <div class="modal-body">
+    <div><label class="form-label">Файл</label>
+      <input class="form-input form-input-mono" data-imp-path placeholder="напр. ~/Downloads/hopterm-hosts-XXXX.json" /></div>
+    <div style="margin-top:var(--space-2)"><label class="form-label">PIN файла</label>
+      <input class="form-input" type="password" data-imp-pin placeholder="пусто, если файл не шифрован" /></div>
+    <div class="form-hint" style="margin-top:var(--space-2)">Мерж в текущий конфиг: хост с тем же id обновится, новый — добавится. Подходит файл экспорта HopTerm или config.json.</div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button><button class="btn btn-primary" data-ok>Импортировать</button></div>`,
+    (back, cancel) => {
+      if (!cancel) {
+        const path = back.querySelector('[data-imp-path]').value.trim();
+        if (!path) { back.querySelector('[data-imp-path]').focus(); return; }
+        send({ cmd:'import_hosts', path, pin: back.querySelector('[data-imp-pin]').value });
       }
       back._close();
     });

@@ -481,6 +481,68 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 }
             }
 
+            // Import a config-shaped file (a sealed export or a plain config)
+            // and merge it into the current hosts: same profile id updates the
+            // existing entry, a new id is added. Ids survive export, so
+            // re-import refreshes rather than duplicates.
+            "import_hosts" => {
+                let path =
+                    expand_home(msg.get("path").and_then(|v| v.as_str()).unwrap_or("").trim());
+                let pin = msg.get("pin").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    continue;
+                }
+                let parsed = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("файл не прочитан: {path}: {e}"))
+                    .and_then(|text| {
+                        hopterm_storage::open_with_pin(&text, pin).map_err(|e| e.to_string())
+                    })
+                    .and_then(|json| {
+                        serde_json::from_str::<Value>(&json)
+                            .ok()
+                            .and_then(|v| v.get("profiles").cloned())
+                            .map(serde_json::from_value::<Vec<SessionProfile>>)
+                            .transpose()
+                            .map_err(|e| format!("не конфиг HopTerm: {e}"))?
+                            .filter(|ps| !ps.is_empty())
+                            .ok_or_else(|| "в файле нет хостов".to_string())
+                    });
+                let imported = match parsed {
+                    Ok(ps) => ps,
+                    Err(e) => {
+                        emit(&proxy, json!({"ev":"toast","error":true,"text":e}));
+                        continue;
+                    }
+                };
+                let (mut added, mut updated) = (0u32, 0u32);
+                let mut failed: Option<String> = None;
+                for p in &imported {
+                    if let Err(e) = store.save_profile(p) {
+                        failed = Some(e.to_string());
+                        break;
+                    }
+                    let mut ps = profiles.lock().unwrap();
+                    match ps.iter_mut().find(|x| x.id == p.id) {
+                        Some(slot) => {
+                            *slot = p.clone();
+                            updated += 1;
+                        }
+                        None => {
+                            ps.push(p.clone());
+                            added += 1;
+                        }
+                    }
+                }
+                seed_stored_passwords(&stored_pw, &profiles.lock().unwrap());
+                emit(&proxy, json!({"ev":"hosts","items":host_items(&profiles.lock().unwrap())}));
+                match failed {
+                    Some(e) => emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":format!("Импорт прерван: {e} (добавлено {added}, обновлено {updated})")})),
+                    None => emit(&proxy, json!({"ev":"toast",
+                        "text":format!("Импорт: добавлено {added}, обновлено {updated}")})),
+                }
+            }
+
             // Enable (`pin` set) or disable (`pin` null) config encryption.
             // While the store is still locked, the toggle re-asks for the PIN
             // instead — also the recovery path after a cancelled startup prompt.

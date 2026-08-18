@@ -307,6 +307,24 @@ pub fn seal_with_pin(json: &str, pin: &str) -> String {
     serde_json::to_string_pretty(&env).expect("envelope always serializes")
 }
 
+/// The inverse of [`seal_with_pin`] for reading a foreign config-shaped file:
+/// an envelope is opened with `pin`, plain text passes through unchanged.
+pub fn open_with_pin(text: &str, pin: &str) -> Result<String, StorageError> {
+    match parse_envelope(text)? {
+        None => Ok(text.to_string()),
+        Some(env) => {
+            let salt: [u8; crypto::SALT_LEN] = b64_decode(&env.salt)?
+                .try_into()
+                .map_err(|_| StorageError::Crypto("bad salt length".into()))?;
+            let data = b64_decode(&env.data)?;
+            let key = crypto::derive_key(pin, &salt);
+            let plain = crypto::open(&key, &data)
+                .ok_or_else(|| StorageError::Crypto("неверный PIN или файл повреждён".into()))?;
+            String::from_utf8(plain).map_err(|e| StorageError::Crypto(e.to_string()))
+        }
+    }
+}
+
 /// `Some` if `text` is an encryption envelope; `Err` if it pretends to be one
 /// but is unusable — a broken envelope must never read as an empty plain config
 /// (all [`ConfigDoc`] fields are defaulted), or a later save would clobber it.
@@ -428,6 +446,11 @@ mod tests {
         let key = crypto::derive_key("1234", &salt);
         assert_eq!(crypto::open(&key, &data).unwrap(), br#"{"profiles":[]}"#);
         assert!(crypto::open(&crypto::derive_key("wrong", &salt), &data).is_none());
+
+        // the import-side reader: sealed round-trip, wrong PIN, plain pass-through
+        assert_eq!(open_with_pin(&sealed, "1234").unwrap(), r#"{"profiles":[]}"#);
+        assert!(open_with_pin(&sealed, "wrong").is_err());
+        assert_eq!(open_with_pin(r#"{"profiles":[]}"#, "").unwrap(), r#"{"profiles":[]}"#);
     }
 
     fn sample_profile() -> SessionProfile {
