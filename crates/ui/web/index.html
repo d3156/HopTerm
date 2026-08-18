@@ -766,6 +766,10 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           Поиск
         </button>
+        <button class="btn btn-ghost btn-sm" onclick="openExportHosts()">
+          <svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Экспорт
+        </button>
         <button class="btn btn-primary btn-sm" onclick="openAddHost()">
           <svg viewBox="0 0 24 24" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Добавить хост
@@ -2100,6 +2104,26 @@ function updateChainPreview() {
   const el = document.getElementById('hop-chain-preview');
   el.innerHTML = '<span style="color:var(--color-text-faint);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.06em">Маршрут: </span>' +
     nodes.map((n,i)=>`${i?'<span class="hop-arrow">→</span>':''}<span class="hop-node${i===nodes.length-1&&h.target.host?' final':''}">${esc(n)}</span>`).join('');
+}
+
+/* Export a chosen subset of hosts to a config-shaped JSON file. Reference
+   hops of the picked hosts are pulled in by the backend automatically. */
+function openExportHosts() {
+  if (!lastHosts.length) return;
+  const rows = lastHosts.map(h =>
+    `<label style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:pointer"><input type="checkbox" value="${esc(h.id)}" checked /> ${esc(h.name)} <span style="color:var(--color-text-muted);font-family:var(--font-mono);font-size:var(--text-xs)">${esc(h.endpoint)}</span></label>`).join('');
+  promptModal(`
+    <div class="modal-header"><span class="modal-title">Экспорт хостов</span></div>
+    <div class="modal-body"><div style="max-height:45vh;overflow-y:auto">${rows}</div>
+    <div class="form-hint" style="margin-top:var(--space-2)">Файл в формате конфига HopTerm. Хопы-ссылки выбранных хостов добавятся сами. Пароли в файл не включаются.</div></div>
+    <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button><button class="btn btn-primary" data-ok>Экспортировать</button></div>`,
+    (back, cancel) => {
+      if (!cancel) {
+        const ids = [...back.querySelectorAll('input:checked')].map(i => i.value);
+        if (ids.length) send({ cmd:'export_hosts', ids });
+      }
+      back._close();
+    });
 }
 
 function openAddHost() { renderHostForm(null); showModal('add-host'); }

@@ -426,6 +426,53 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 }
             }
 
+            // Export chosen hosts (plus their reference-hop closure) as a
+            // config-shaped JSON. Stored passwords stay home: the export is a
+            // plain file even when the config itself is PIN-encrypted.
+            "export_hosts" => {
+                let ids: std::collections::HashSet<String> = msg
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                if ids.is_empty() {
+                    continue;
+                }
+                let ps = profiles.lock().unwrap().clone();
+                let keep = ref_closure(
+                    ps.iter().filter(|p| ids.contains(&p.id.to_string())).map(|p| p.id),
+                    &ps,
+                );
+                let picked: Vec<SessionProfile> = ps
+                    .iter()
+                    .filter(|p| keep.contains(&p.id))
+                    .cloned()
+                    .map(|mut p| {
+                        p.route.target.password = None;
+                        for h in &mut p.route.hops {
+                            h.password = None;
+                        }
+                        p.sudo.password = None;
+                        p
+                    })
+                    .collect();
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let path = format!("{}/hopterm-hosts-{stamp}.json", download_dir());
+                let doc = json!({"profiles": picked});
+                match serde_json::to_string_pretty(&doc)
+                    .map_err(|e| e.to_string())
+                    .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()))
+                {
+                    Ok(()) => emit(&proxy, json!({"ev":"toast",
+                        "text":format!("Экспортировано хостов: {} — {path} (пароли не включены)", picked.len())})),
+                    Err(e) => emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":format!("Экспорт не удался: {e}")})),
+                }
+            }
+
             // Enable (`pin` set) or disable (`pin` null) config encryption.
             // While the store is still locked, the toggle re-asks for the PIN
             // instead — also the recovery path after a cancelled startup prompt.
@@ -1311,6 +1358,27 @@ fn seed_stored_passwords(map: &Mutex<HashMap<String, String>>, profiles: &[Sessi
     }
 }
 
+/// The selected profile ids plus every profile they hop-reference,
+/// transitively — an exported subset must carry its dependencies.
+fn ref_closure(
+    selected: impl Iterator<Item = ProfileId>,
+    all: &[SessionProfile],
+) -> std::collections::HashSet<ProfileId> {
+    let mut keep: std::collections::HashSet<ProfileId> = selected.collect();
+    loop {
+        let missing: Vec<ProfileId> = all
+            .iter()
+            .filter(|p| keep.contains(&p.id))
+            .flat_map(|p| p.route.hops.iter().filter_map(|h| h.hop_ref))
+            .filter(|r| !keep.contains(r))
+            .collect();
+        if missing.is_empty() {
+            return keep;
+        }
+        keep.extend(missing);
+    }
+}
+
 /// Materialize a profile's route: every reference hop is replaced by the
 /// referenced profile's resolved chain (its hops, then its target), so the
 /// transport, ssh argv and password seeding see only concrete nodes.
@@ -1843,6 +1911,19 @@ mod hop_ref_tests {
 
         let dangling = profile("d", vec![ref_hop(ProfileId::new(uuid::Uuid::new_v4()))], "t");
         assert!(resolve_profile(&dangling, &all).is_err());
+    }
+
+    #[test]
+    fn export_closure_pulls_referenced_hosts() {
+        let bastion = profile("bastion", vec![], "b.example");
+        let gate = profile("gate", vec![ref_hop(bastion.id)], "g.example");
+        let app = profile("app", vec![ref_hop(gate.id)], "a.example");
+        let lone = profile("lone", vec![], "l.example");
+        let all = vec![bastion.clone(), gate.clone(), app.clone(), lone.clone()];
+
+        let keep = ref_closure([app.id].into_iter(), &all);
+        assert_eq!(keep.len(), 3); // app -> gate -> bastion, but not lone
+        assert!(keep.contains(&bastion.id) && !keep.contains(&lone.id));
     }
 }
 
