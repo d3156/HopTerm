@@ -56,6 +56,7 @@ Section: net
 Priority: optional
 Architecture: ${ARCH}
 Depends: ${DEPENDS}
+Recommends: rsync, openssh-client
 Maintainer: ${MAINTAINER}
 Installed-Size: ${isize}
 Description: HopTerm — multi-hop SSH terminal manager
