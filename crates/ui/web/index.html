@@ -1734,7 +1734,8 @@ function renderHostTabs() {
   tabs.innerHTML = mk('', 'Все хосты') + all.map(t => mk(t, t)).join('');
 }
 function renderHosts(items) {
-  lastHosts = items;
+  /* Alphabetical, numeric-aware (web2 < web10) — a big list must scan by eye. */
+  lastHosts = items = [...items].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   fillCmdFilter();
   if (commands.length) renderCommands();
   const validTags = new Set(lastHosts.flatMap(h => (h.tags || []).map(t => ('' + t).toLowerCase())));
