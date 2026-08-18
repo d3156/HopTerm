@@ -910,10 +910,10 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
         </div>
 
         <div class="card" style="margin-bottom:var(--space-4)">
-          <div class="card-header"><span class="card-title">Рабочий стол (VNC · x11vnc)</span></div>
+          <div class="card-header"><span class="card-title">Рабочий стол (X11 / Wayland)</span></div>
           <div class="card-body">
             <div class="form-hint" style="margin-bottom:var(--space-3)">
-              Показывает <b>текущий рабочий стол хоста</b> со всеми открытыми программами и даёт им управлять. Поднимает <span class="form-input-mono">x11vnc</span> на дисплее хоста (только loopback), туннелирует его и открывает локальный VNC-клиент. На хосте нужен <span class="form-input-mono">x11vnc</span> (<span class="form-input-mono">apt install x11vnc</span>), на этой машине — любой VNC-клиент.
+              Показывает <b>текущий рабочий стол хоста</b> со всеми открытыми программами и даёт им управлять. Тип сессии хоста определяется сам: X11 — <span class="form-input-mono">x11vnc</span> + VNC-клиент; GNOME на Wayland — <span class="form-input-mono">gnome-remote-desktop</span> (RDP, включается отсюда же) + RDP-клиент; wlroots (sway и др.) — <span class="form-input-mono">wayvnc</span>. Всё только через SSH-туннель, наружу ничего не открывается. Недостающий инструмент предложит установить.
             </div>
             <div class="form-row">
               <div>
@@ -928,6 +928,29 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
             <button class="btn btn-primary btn-sm" style="margin-top:var(--space-3)" onclick="addDesktop()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="4" width="18" height="12" rx="1"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/></svg>
               Открыть рабочий стол
+            </button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="card-header"><span class="card-title">Приложение GUI (Wayland · waypipe)</span></div>
+          <div class="card-body">
+            <div class="form-hint" style="margin-bottom:var(--space-3)">
+              Запускает <b>одно приложение с хоста</b>, а окно рисуется здесь — как <span class="form-input-mono">ssh -X</span>, но для Wayland. Нужен <span class="form-input-mono">waypipe</span> на обеих машинах (недостающий на хосте предложит установить) и Wayland-сессия на этой.
+            </div>
+            <div class="form-row">
+              <div>
+                <label class="form-label">Хост</label>
+                <select id="app-session" class="form-select"></select>
+              </div>
+              <div>
+                <label class="form-label">Команда приложения</label>
+                <input class="form-input form-input-mono" id="app-cmd" placeholder="напр. gnome-calculator" onkeydown="if(event.key==='Enter')runRemoteApp()" />
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" style="margin-top:var(--space-3)" onclick="runRemoteApp()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Запустить приложение
             </button>
           </div>
         </div>
@@ -1912,7 +1935,7 @@ let forwards = [];
 /* Fill the "через соединение" dropdown from the currently live sessions. */
 function renderForwardSessions() {
   const live = Object.entries(sessions).filter(([k, s]) => s.live);
-  ['fwd-session', 'socks-session', 'desktop-session'].forEach(selId => {
+  ['fwd-session', 'socks-session', 'desktop-session', 'app-session'].forEach(selId => {
     const sel = document.getElementById(selId); if (!sel) return;
     const prev = sel.value;
     sel.innerHTML = live.map(([k, s]) => `<option value="${esc(k)}">${esc(s.title)}</option>`).join('');
@@ -1934,7 +1957,59 @@ function addDesktop() {
   if (!session) { showToast('Нет активного соединения — подключитесь к хосту', true); return; }
   const display = document.getElementById('desktop-display').value.trim();
   send({ cmd:'desktop_start', id: session, display });
-  showToast('Поднимаю x11vnc и открываю VNC-клиент…');
+  showToast('Определяю тип сессии хоста и поднимаю рабочий стол…');
+}
+function runRemoteApp() {
+  const sel = document.getElementById('app-session');
+  const session = sel && sel.value;
+  if (!session) { showToast('Нет активного соединения — подключитесь к хосту', true); return; }
+  const command = document.getElementById('app-cmd').value.trim();
+  if (!command) { showToast('Укажите команду приложения', true); return; }
+  send({ cmd:'app_start', id: session, command });
+}
+/* Backend asks for setup it cannot decide alone: install a missing tool on
+   the host (typed into the terminal so sudo can prompt), or enable
+   gnome-remote-desktop's RDP with user-chosen credentials. */
+function onDesktopSetup(e) {
+  if (e.kind === 'missing') {
+    const tool = e.tool;
+    promptModal(`
+      <div class="modal-header"><span class="modal-title">На хосте нет ${esc(tool)}</span></div>
+      <div class="modal-body">Для этой операции на хосте нужен <code>${esc(tool)}</code>.
+        Установить сейчас? Команда наберётся в терминале хоста — sudo спросит пароль там.</div>
+      <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button>
+        <button class="btn btn-primary" data-ok>Установить (apt)</button></div>`,
+      (back, cancel) => {
+        if (!cancel) {
+          send({ cmd:'input', id: e.key, data: strToB64(`sudo apt-get install -y ${tool}\n`) });
+          if (sessions[e.key]) { showView('terminal'); setActive(e.key); }
+        }
+        back._close();
+      });
+    return;
+  }
+  if (e.kind === 'gnome_rdp') {
+    promptModal(`
+      <div class="modal-header"><span class="modal-title">Рабочий стол — GNOME на Wayland</span></div>
+      <div class="modal-body">Такой стол отдаётся по <b>RDP</b> (gnome-remote-desktop); сейчас он выключен.
+        Включить? Задайте логин и пароль — ими же авторизуется RDP-клиент.
+        <div style="margin-top:var(--space-3)"><label class="form-label">Логин RDP</label>
+          <input class="form-input" data-rdp-user placeholder="напр. desktop" /></div>
+        <div style="margin-top:var(--space-2)"><label class="form-label">Пароль RDP</label>
+          <input class="form-input" type="password" data-rdp-pass /></div></div>
+      <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button>
+        <button class="btn btn-primary" data-ok>Включить и подключиться</button></div>`,
+      (back, cancel) => {
+        if (!cancel) {
+          const user = back.querySelector('[data-rdp-user]').value.trim();
+          const pass = back.querySelector('[data-rdp-pass]').value;
+          if (!user || !pass) { back.querySelector(user ? '[data-rdp-pass]' : '[data-rdp-user]').focus(); return; }
+          send({ cmd:'desktop_rdp_enable', id: e.key, user, pass });
+          showToast('Включаю gnome-remote-desktop на хосте…');
+        }
+        back._close();
+      });
+  }
 }
 function addForward() {
   const sel = document.getElementById('fwd-session');
@@ -2004,6 +2079,7 @@ window.hop = {
       }
       case 'closed': { removeSession(e.id); refreshForwardsIfActive(); break; }   // shell exit / drop → close tab
       case 'forwards': { forwards = e.items || []; renderForwards(); break; }
+      case 'desktop_setup': { onDesktopSetup(e); break; }
       case 'commands': { commands = e.items; renderCommands(); break; }
       case 'sftp': { if (e.key === sftpKey) renderSftp(e.path, e.entries); break; }
       case 'sftp_err': { const l = document.getElementById('sftp-list'); if (l) l.innerHTML = '<div style="padding:8px;color:var(--color-notification)">'+esc(e.error)+'</div>'; break; }

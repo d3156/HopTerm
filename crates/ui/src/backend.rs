@@ -855,9 +855,10 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
             }
 
             "desktop_start" => {
-                // `id` is the session key. Shadow the remote X display with x11vnc
-                // (loopback only), tunnel it like a local forward, and open a native
-                // VNC viewer on this machine.
+                // `id` is the session key. One remote probe picks the road:
+                // X11 -> x11vnc shadow (as before), GNOME on Wayland -> RDP
+                // (gnome-remote-desktop), wlroots -> wayvnc. A missing tool is
+                // offered for installation instead of a dead-end error.
                 let session_key = id.clone();
                 // Empty = auto-detect on the remote. Sanitised so it is safe to
                 // splice into the shell command below.
@@ -882,68 +883,153 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 };
                 let (proxy2, forwards2, sessions2) = (proxy.clone(), forwards.clone(), sessions.clone());
                 tokio::spawn(async move {
-                    let vnc = remote_x11vnc_cmd(&display);
-                    let conn_vnc = conn.clone();
-                    let proxy_vnc = proxy2.clone();
-                    tokio::spawn(async move {
-                        // Drain x11vnc's output. A non-zero exit comes back as an Err
-                        // carrying its stderr — surface it instead of failing silently
-                        // (that opaque failure is what reads as "server closes connection").
-                        match conn_vnc.exec_stream(&vnc).await {
-                            Ok(mut s) => loop {
-                                match s.next_chunk().await {
-                                    Ok(Some(_)) => {}
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        emit(&proxy_vnc, json!({"ev":"toast","error":true,
-                                            "text": format!("x11vnc на хосте: {e}")}));
-                                        break;
-                                    }
-                                }
-                            },
-                            Err(e) => emit(&proxy_vnc, json!({"ev":"toast","error":true,
-                                "text": format!("x11vnc — запуск не удался: {e}")})),
+                    let det = exec_collect(&conn, DESKTOP_DETECT_CMD).await.unwrap_or_default();
+                    let has = |k: &str| det.lines().any(|l| l.trim() == k);
+                    let missing = |tool: &str| {
+                        emit(&proxy2, json!({"ev":"desktop_setup","key":session_key,
+                            "kind":"missing","tool":tool}));
+                    };
+                    if has("TYPE=X11") {
+                        if !has("X11VNC=OK") {
+                            return missing("x11vnc");
                         }
-                    });
-                    // Tunnel a free local port → remote 127.0.0.1:5900, registered as a
-                    // normal forward so disconnect tears it down with the rest.
-                    let pf = match conn.forward_local("127.0.0.1", 0, "127.0.0.1", 5900).await {
-                        Ok(pf) => pf,
+                        vnc_desktop_flow(conn, proxy2, forwards2, sessions2, session_key,
+                                         label, remote_x11vnc_cmd(&display)).await;
+                    } else if has("TYPE=GNOME_WAYLAND") {
+                        if has("RDP=ON") {
+                            rdp_connect_flow(conn, proxy2, forwards2, sessions2, session_key, label).await;
+                        } else {
+                            emit(&proxy2, json!({"ev":"desktop_setup","key":session_key,
+                                "kind":"gnome_rdp"}));
+                        }
+                    } else if has("TYPE=WLROOTS") {
+                        if !has("WAYVNC=OK") {
+                            return missing("wayvnc");
+                        }
+                        vnc_desktop_flow(conn, proxy2, forwards2, sessions2, session_key,
+                                         label, remote_wayvnc_cmd()).await;
+                    } else if has("TYPE=WAYLAND_OTHER") {
+                        emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text":"Wayland-композитор хоста не поддержан (умею GNOME и wlroots)"}));
+                    } else {
+                        emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text":"На хосте не найдено графической сессии (X11/Wayland)"}));
+                    }
+                });
+            }
+
+            // Enable gnome-remote-desktop's RDP on the host (its GNOME/Wayland
+            // desktop is shared over RDP, not VNC), then connect to it.
+            "desktop_rdp_enable" => {
+                let session_key = id.clone();
+                let user = msg.get("user").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let pass = msg.get("pass").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if user.is_empty() || pass.is_empty() {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Укажите логин и пароль для RDP"}));
+                    continue;
+                }
+                let (conn, label) = {
+                    let s = sessions.lock().unwrap();
+                    match s.get(&session_key) {
+                        Some(a) => (manager.connection(a.id), a.title.clone()),
+                        None => (None, String::new()),
+                    }
+                };
+                let Some(conn) = conn else {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Нет активного соединения — подключитесь к хосту"}));
+                    continue;
+                };
+                let (proxy2, forwards2, sessions2) = (proxy.clone(), forwards.clone(), sessions.clone());
+                tokio::spawn(async move {
+                    let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+                    let cmd = format!(
+                        r#"export XDG_RUNTIME_DIR=${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}
+export DBUS_SESSION_BUS_ADDRESS=${{DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}}
+if grdctl status 2>/dev/null | grep -q 'TLS certificate: *$'; then
+  D="$HOME/.local/share/gnome-remote-desktop"; mkdir -p "$D"
+  openssl req -x509 -newkey rsa:2048 -keyout "$D/tls.key" -out "$D/tls.crt" \
+    -days 3650 -nodes -subj /CN=hopterm >/dev/null 2>&1
+  grdctl rdp set-tls-cert "$D/tls.crt" && grdctl rdp set-tls-key "$D/tls.key"
+fi
+grdctl rdp enable && grdctl rdp set-credentials {u} {p} && grdctl rdp disable-view-only \
+  && systemctl --user restart gnome-remote-desktop
+for i in 1 2 3 4 5 6 7 8; do
+  grdctl status 2>/dev/null | sed -n '/^RDP/,/^VNC/p' | grep -q 'Status: enabled' \
+    && systemctl --user is-active gnome-remote-desktop >/dev/null 2>&1 \
+    && echo RDP_UP && exit 0
+  sleep 1
+done
+echo RDP_FAIL
+journalctl --user -u gnome-remote-desktop -n 5 --no-pager 2>/dev/null"#,
+                        u = q(&user),
+                        p = q(&pass),
+                    );
+                    match exec_collect(&conn, &cmd).await {
+                        Ok(out) if out.contains("RDP_UP") => {
+                            emit(&proxy2, json!({"ev":"toast",
+                                "text":"gnome-remote-desktop включён — подключаюсь"}));
+                            rdp_connect_flow(conn, proxy2, forwards2, sessions2, session_key, label).await;
+                        }
+                        Ok(out) => emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text":format!("RDP не поднялся: {}", last_lines(&out, 3))})),
+                        Err(e) => emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text":format!("grdctl: {e}")})),
+                    }
+                });
+            }
+
+            // Run a single GUI app off the host through waypipe — its window
+            // renders on the local Wayland compositor.
+            "app_start" => {
+                let session_key = id.clone();
+                let app = msg.get("command").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                if app.is_empty() {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Укажите команду приложения (напр. gnome-calculator)"}));
+                    continue;
+                }
+                let pc = {
+                    let s = sessions.lock().unwrap();
+                    s.get(&session_key).map(|a| (a.profile.clone(), manager.connection(a.id)))
+                };
+                let Some((profile, Some(conn))) = pc else {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Нет активного соединения — подключитесь к хосту"}));
+                    continue;
+                };
+                if std::env::var("WAYLAND_DISPLAY").is_err() {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Локальная сессия не Wayland — waypipe здесь не работает"}));
+                    continue;
+                }
+                if !local_tool_exists("waypipe") {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"На этой машине нет waypipe — sudo apt install waypipe"}));
+                    continue;
+                }
+                let proxy2 = proxy.clone();
+                tokio::spawn(async move {
+                    match exec_collect(&conn, "command -v waypipe >/dev/null 2>&1 && echo WP_OK || echo WP_MISSING").await {
+                        Ok(o) if o.contains("WP_OK") => {}
+                        Ok(_) => {
+                            emit(&proxy2, json!({"ev":"desktop_setup","key":session_key,
+                                "kind":"missing","tool":"waypipe"}));
+                            return;
+                        }
                         Err(e) => {
                             emit(&proxy2, json!({"ev":"toast","error":true,
-                                "text": format!("Рабочий стол — проброс не удался: {e}")}));
+                                "text":format!("проверка waypipe: {e}")}));
                             return;
                         }
-                    };
-                    let bound = pf.local_port();
-                    let items = {
-                        let mut fw = forwards2.lock().unwrap();
-                        if !sessions2.lock().unwrap().contains_key(&session_key) {
-                            drop(fw);
-                            return;
-                        }
-                        fw.insert(
-                            uuid::Uuid::new_v4().to_string(),
-                            ActiveForward {
-                                pf,
-                                kind: "local",
-                                session_key,
-                                local_port: bound,
-                                remote_host: "127.0.0.1".to_string(),
-                                remote_port: 5900,
-                                label,
-                            },
-                        );
-                        forwards_json(&fw)
-                    };
-                    emit(&proxy2, json!({"ev":"forwards","items":items}));
-                    // Give x11vnc a moment to bind before the viewer dials in.
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let text = match open_vnc_viewer(bound) {
-                        Ok(bin) => format!("Рабочий стол открыт в {bin} — 127.0.0.1:{bound}"),
-                        Err(e) => format!("VNC готов на 127.0.0.1:{bound}. {e}"),
-                    };
-                    emit(&proxy2, json!({"ev":"toast","text": text}));
+                    }
+                    match spawn_waypipe_app(&profile, &app) {
+                        Ok(()) => emit(&proxy2, json!({"ev":"toast",
+                            "text":format!("Запускаю через waypipe: {app} — окно появится через несколько секунд")})),
+                        Err(e) => emit(&proxy2, json!({"ev":"toast","error":true,
+                            "text":format!("waypipe: {e}")})),
+                    }
                 });
             }
 
@@ -1855,6 +1941,268 @@ fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String>
 /// `-forever` keeps it serving across viewer reconnects; `-timeout` bounds startup;
 /// it dies when the SSH session closes. (x11vnc is X11-only — a Wayland session
 /// makes it exit with "Wayland display server detected".)
+/// Start a VNC server on the host with `server_cmd`, tunnel a free local port
+/// to remote 127.0.0.1:5900 (registered as a normal forward so disconnect
+/// tears it down), and open a local VNC viewer.
+async fn vnc_desktop_flow(
+    conn: Arc<dyn SshConnection>,
+    proxy: EventLoopProxy<UserEvent>,
+    forwards: Forwards,
+    sessions: Sessions,
+    session_key: String,
+    label: String,
+    server_cmd: String,
+) {
+    let conn_vnc = conn.clone();
+    let proxy_vnc = proxy.clone();
+    tokio::spawn(async move {
+        // Drain the server's output. A non-zero exit comes back as an Err
+        // carrying its stderr — surface it instead of failing silently
+        // (that opaque failure is what reads as "server closes connection").
+        match conn_vnc.exec_stream(&server_cmd).await {
+            Ok(mut s) => loop {
+                match s.next_chunk().await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(e) => {
+                        emit(&proxy_vnc, json!({"ev":"toast","error":true,
+                            "text": format!("VNC-сервер на хосте: {e}")}));
+                        break;
+                    }
+                }
+            },
+            Err(e) => emit(&proxy_vnc, json!({"ev":"toast","error":true,
+                "text": format!("VNC-сервер — запуск не удался: {e}")})),
+        }
+    });
+    let Some(bound) =
+        register_desktop_forward(&conn, &proxy, &forwards, &sessions, session_key, label, 5900)
+            .await
+    else {
+        return;
+    };
+    // Give the server a moment to bind before the viewer dials in.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let text = match open_vnc_viewer(bound) {
+        Ok(bin) => format!("Рабочий стол открыт в {bin} — 127.0.0.1:{bound}"),
+        Err(e) => format!("VNC готов на 127.0.0.1:{bound}. {e}"),
+    };
+    emit(&proxy, json!({"ev":"toast","text": text}));
+}
+
+/// Tunnel to the host's already-listening gnome-remote-desktop (RDP, :3389)
+/// and open a local RDP client.
+async fn rdp_connect_flow(
+    conn: Arc<dyn SshConnection>,
+    proxy: EventLoopProxy<UserEvent>,
+    forwards: Forwards,
+    sessions: Sessions,
+    session_key: String,
+    label: String,
+) {
+    let Some(bound) =
+        register_desktop_forward(&conn, &proxy, &forwards, &sessions, session_key, label, 3389)
+            .await
+    else {
+        return;
+    };
+    let text = match open_rdp_viewer(bound) {
+        Ok(bin) => format!("Рабочий стол (RDP) открыт в {bin} — 127.0.0.1:{bound}"),
+        Err(e) => format!("RDP готов на 127.0.0.1:{bound}. {e}"),
+    };
+    emit(&proxy, json!({"ev":"toast","text": text}));
+}
+
+/// Forward a free local port to the host's loopback `remote_port` and register
+/// it in the forwards list. Returns the bound local port.
+async fn register_desktop_forward(
+    conn: &Arc<dyn SshConnection>,
+    proxy: &EventLoopProxy<UserEvent>,
+    forwards: &Forwards,
+    sessions: &Sessions,
+    session_key: String,
+    label: String,
+    remote_port: u16,
+) -> Option<u16> {
+    let pf = match conn.forward_local("127.0.0.1", 0, "127.0.0.1", remote_port).await {
+        Ok(pf) => pf,
+        Err(e) => {
+            emit(proxy, json!({"ev":"toast","error":true,
+                "text": format!("Рабочий стол — проброс не удался: {e}")}));
+            return None;
+        }
+    };
+    let bound = pf.local_port();
+    let items = {
+        let mut fw = forwards.lock().unwrap();
+        if !sessions.lock().unwrap().contains_key(&session_key) {
+            return None;
+        }
+        fw.insert(
+            uuid::Uuid::new_v4().to_string(),
+            ActiveForward {
+                pf,
+                kind: "local",
+                session_key,
+                local_port: bound,
+                remote_host: "127.0.0.1".to_string(),
+                remote_port,
+                label,
+            },
+        );
+        forwards_json(&fw)
+    };
+    emit(proxy, json!({"ev":"forwards","items":items}));
+    Some(bound)
+}
+
+/// `waypipe ssh <chain> <app>` as a detached local process: waypipe proxies
+/// the Wayland protocol, so the remote app's window renders locally. Stored
+/// passwords ride the same askpass helper as the external terminal.
+fn spawn_waypipe_app(profile: &SessionProfile, app: &str) -> Result<(), String> {
+    let (mut ssh_argv, temp_keys) = build_ssh_argv(profile);
+    ssh_argv.remove(0); // waypipe invokes ssh itself
+    let creds = password_creds(profile);
+    let mut cmd = Command::new("waypipe");
+    cmd.arg("ssh")
+        .args(["-o".to_string(), "StrictHostKeyChecking=accept-new".to_string()])
+        .args(&ssh_argv)
+        .arg(app)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut cleanup = temp_keys;
+    if !creds.is_empty() {
+        if let Ok(path) = write_askpass_helper(&creds) {
+            cmd.env("SSH_ASKPASS", &path).env("SSH_ASKPASS_REQUIRE", "force");
+            cleanup.push(path);
+        }
+    }
+    let spawned = cmd.spawn().map_err(|e| e.to_string());
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        for p in cleanup {
+            let _ = std::fs::remove_file(p);
+        }
+    });
+    let mut child = spawned?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+fn local_tool_exists(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
+fn last_lines(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join(" | ")
+}
+
+/// Launch a native RDP client at the tunneled gnome-remote-desktop port.
+fn open_rdp_viewer(port: u16) -> Result<String, String> {
+    let uri = format!("rdp://127.0.0.1:{port}");
+    let addr = format!("/v:127.0.0.1:{port}");
+    let candidates: Vec<(&str, Vec<String>)> = vec![
+        ("remmina", vec!["-c".into(), uri.clone()]),
+        ("xfreerdp3", vec![addr.clone()]),
+        ("xfreerdp", vec![addr.clone()]),
+        ("wlfreerdp", vec![addr.clone()]),
+    ];
+    let mut last_err = String::from(
+        "RDP-клиент не найден (remmina / freerdp2-x11) — установите любой и подключитесь к адресу выше",
+    );
+    for (bin, args) in &candidates {
+        let mut cmd = Command::new(bin);
+        cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(bin.to_string());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => last_err = format!("{bin}: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+/// Run a remote command and gather its whole output. A transport error after
+/// some output still returns what arrived — probes prefer partial truth.
+async fn exec_collect(conn: &Arc<dyn SshConnection>, cmd: &str) -> Result<String, String> {
+    let mut s = conn.exec_stream(cmd).await.map_err(|e| e.to_string())?;
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        match s.next_chunk().await {
+            Ok(Some(chunk)) => out.extend(chunk),
+            Ok(None) => break,
+            Err(e) if out.is_empty() => return Err(e.to_string()),
+            Err(_) => break,
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// One probe deciding the desktop road: the host's graphical session type
+/// (X11 / GNOME on Wayland / wlroots) plus which tools are already there.
+/// NB: gnome-shell on Wayland creates the display itself, so its environ has
+/// no WAYLAND_DISPLAY — XDG_SESSION_TYPE is the reliable marker. "RDP=ON"
+/// means the *user's* gnome-remote-desktop sharing is enabled (grdctl); the
+/// bare 3389 listener can be the system login-screen service.
+const DESKTOP_DETECT_CMD: &str = r#"U=$(id -u); TYPE=NONE
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$U}
+export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
+for c in sway Hyprland hyprland river wayfire labwc niri; do
+  pgrep -u "$U" -x "$c" >/dev/null 2>&1 && TYPE=WLROOTS && break
+done
+if [ "$TYPE" = NONE ]; then
+  for p in $(pgrep -u "$U" -x gnome-shell 2>/dev/null); do
+    if tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null \
+       | grep -qE '^(WAYLAND_DISPLAY=|XDG_SESSION_TYPE=wayland)'; then
+      TYPE=GNOME_WAYLAND
+    else
+      TYPE=X11
+    fi
+    break
+  done
+fi
+[ "$TYPE" = NONE ] && pgrep -u "$U" -x kwin_wayland >/dev/null 2>&1 && TYPE=WAYLAND_OTHER
+if [ "$TYPE" = NONE ]; then
+  for s in /tmp/.X11-unix/X*; do [ -O "$s" ] && TYPE=X11 && break; done
+fi
+echo "TYPE=$TYPE"
+grdctl status 2>/dev/null | sed -n '/^RDP/,/^VNC/p' | grep -q 'Status: enabled' \
+  && echo RDP=ON || echo RDP=OFF
+command -v x11vnc >/dev/null 2>&1 && echo X11VNC=OK || echo X11VNC=MISSING
+command -v wayvnc >/dev/null 2>&1 && echo WAYVNC=OK || echo WAYVNC=MISSING"#;
+
+/// wayvnc attached to the live wlroots compositor (loopback only), mirroring
+/// [`remote_x11vnc_cmd`]: environment is lifted from the compositor process.
+fn remote_wayvnc_cmd() -> String {
+    r#"U=$(id -u); WD=''; XRD=''
+for c in sway Hyprland hyprland river wayfire labwc niri; do
+  for p in $(pgrep -u "$U" -x "$c" 2>/dev/null); do
+    e=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)
+    WD=$(printf '%s\n' "$e" | sed -n 's/^WAYLAND_DISPLAY=//p' | head -1)
+    XRD=$(printf '%s\n' "$e" | sed -n 's/^XDG_RUNTIME_DIR=//p' | head -1)
+    [ -n "$WD" ] && break 2
+  done
+done
+XRD=${XRD:-/run/user/$U}; WD=${WD:-wayland-1}
+XDG_RUNTIME_DIR="$XRD" WAYLAND_DISPLAY="$WD" wayvnc 127.0.0.1 5900"#
+        .to_string()
+}
+
 fn remote_x11vnc_cmd(display: &str) -> String {
     format!(
         r#"D='{display}'; XA=''
