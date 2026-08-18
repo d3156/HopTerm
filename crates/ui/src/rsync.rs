@@ -100,8 +100,9 @@ fn parse_progress(line: &str) -> Option<(u64, u64)> {
 /// helper BatchMode stops ssh from popping a system password dialog — key and
 /// agent auth still work, everything else fails fast into the SFTP fallback.
 /// NB: rsync splits `-e` on whitespace, so only space-free options belong here.
-fn ssh_command(profile: &SessionProfile, batch: bool) -> (String, String) {
-    let mut argv = build_ssh_argv(profile);
+/// The third value: transient key files backing the argv, removed by the job.
+fn ssh_command(profile: &SessionProfile, batch: bool) -> (String, String, Vec<std::path::PathBuf>) {
+    let (mut argv, temp_keys) = build_ssh_argv(profile);
     let user_host = argv.pop().unwrap_or_default();
     for opt in [
         "ServerAliveInterval=10",
@@ -116,7 +117,7 @@ fn ssh_command(profile: &SessionProfile, batch: bool) -> (String, String) {
         argv.push("-o".into());
         argv.push("BatchMode=yes".into());
     }
-    (argv.join(" "), user_host)
+    (argv.join(" "), user_host, temp_keys)
 }
 
 /// Outcome of the whole retry loop.
@@ -137,6 +138,8 @@ struct Job {
     src: String,
     dest: String,
     askpass: Option<std::path::PathBuf>,
+    /// Transient key files backing `ssh_e` — removed when the job ends.
+    temp_keys: Vec<std::path::PathBuf>,
     cancel: CancelToken,
 }
 
@@ -157,7 +160,7 @@ pub(crate) fn spawn_download(
     fallback: Box<dyn FnOnce(String) + Send>,
 ) {
     let creds = password_creds(&profile);
-    let (ssh_e, user_host) = ssh_command(&profile, creds.is_empty());
+    let (ssh_e, user_host, temp_keys) = ssh_command(&profile, creds.is_empty());
     let job = Job {
         proxy,
         id: uuid::Uuid::new_v4().to_string(),
@@ -169,6 +172,7 @@ pub(crate) fn spawn_download(
         // The helper must outlive every retry (a reconnect an hour in still
         // authenticates with it) — removed when the job ends, not on a timer.
         askpass: if creds.is_empty() { None } else { write_askpass_helper(&creds).ok() },
+        temp_keys,
         cancel: CancelToken::new(),
     };
     launch(job, transfers, fallback);
@@ -186,7 +190,7 @@ pub(crate) fn spawn_upload(
     fallback: Box<dyn FnOnce(String) + Send>,
 ) {
     let creds = password_creds(&profile);
-    let (ssh_e, user_host) = ssh_command(&profile, creds.is_empty());
+    let (ssh_e, user_host, temp_keys) = ssh_command(&profile, creds.is_empty());
     // A directory source needs a trailing slash: a remote destination path is
     // treated as the parent to copy *into*, so a bare name would nest as
     // dest/name/name.
@@ -201,6 +205,7 @@ pub(crate) fn spawn_upload(
         src,
         dest: format!("{user_host}:{remote}"),
         askpass: if creds.is_empty() { None } else { write_askpass_helper(&creds).ok() },
+        temp_keys,
         cancel: CancelToken::new(),
     };
     launch(job, transfers, fallback);
@@ -217,6 +222,9 @@ fn launch(
         emit(&job.proxy, job.progress_event(0, 0, None));
         let end = job.run().await;
         if let Some(p) = &job.askpass {
+            let _ = std::fs::remove_file(p);
+        }
+        for p in &job.temp_keys {
             let _ = std::fs::remove_file(p);
         }
         transfers.lock().unwrap().remove(&job.id);

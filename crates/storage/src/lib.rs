@@ -440,6 +440,7 @@ mod tests {
             auth_method: AuthMethod::PublicKey {
                 key_path: "~/.ssh/prod_key".into(),
                 passphrase_protected: false,
+                key_data: None,
             },
             password: None,
             tags: vec!["production".into()],

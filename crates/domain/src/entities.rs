@@ -58,6 +58,11 @@ pub enum AuthMethod {
         key_path: String,
         #[serde(default)]
         passphrase_protected: bool,
+        /// A copy of the private key (PEM), kept in the config so connecting
+        /// survives deletion of the file at `key_path`. Protected by the
+        /// config's PIN encryption like stored passwords.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_data: Option<String>,
     },
     /// Delegate to a running SSH agent (`SSH_AUTH_SOCK`).
     Agent,

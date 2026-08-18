@@ -264,13 +264,20 @@ async fn authenticate(
         AuthMethod::PublicKey {
             key_path,
             passphrase_protected,
+            key_data,
         } => {
-            let bytes = creds
-                .private_key(key_path)
-                .await
-                .map_err(|e| to_sec(e.to_string()))?;
-            let pem = String::from_utf8(bytes)
-                .map_err(|e| to_sec(format!("private key is not valid UTF-8: {e}")))?;
+            // A key copied into the config wins: the file may be gone.
+            let pem = match key_data {
+                Some(data) => data.clone(),
+                None => {
+                    let bytes = creds
+                        .private_key(key_path)
+                        .await
+                        .map_err(|e| to_sec(e.to_string()))?;
+                    String::from_utf8(bytes)
+                        .map_err(|e| to_sec(format!("private key is not valid UTF-8: {e}")))?
+                }
+            };
             let passphrase = if *passphrase_protected {
                 Some(
                     creds

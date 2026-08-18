@@ -112,6 +112,7 @@ async fn live_key_single_hop() {
             AuthMethod::PublicKey {
                 key_path: KEY.into(),
                 passphrase_protected: false,
+                key_data: None,
             },
         ),
         policy: RoutePolicy::DirectTcpIp,

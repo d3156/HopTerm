@@ -19,6 +19,7 @@ fn seed_real_profile() {
         auth_method: AuthMethod::PublicKey {
             key_path: "~/.ssh/id_ed25519".into(),
             passphrase_protected: false,
+            key_data: None,
         },
         password: None,
         tags: vec!["lan".into()],

@@ -358,7 +358,17 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
 
             "save_host" => {
                 if let Some(host) = msg.get("host") {
-                    let profile = profile_from_json(host);
+                    let mut profile = profile_from_json(host);
+                    let vault_res = {
+                        let ps = profiles.lock().unwrap();
+                        let old = ps.iter().find(|p| p.id == profile.id);
+                        vault_keys(&mut profile, old)
+                    };
+                    if let Err(e) = vault_res {
+                        emit(&proxy, json!({"ev":"toast","error":true,
+                            "text":format!("Хост не сохранён: {e}")}));
+                        continue;
+                    }
                     // Reject dangling/cyclic hop references at save time, not
                     // at the first connect attempt.
                     let ref_err = {
@@ -1356,6 +1366,43 @@ fn seed_stored_passwords(map: &Mutex<HashMap<String, String>>, profiles: &[Sessi
     }
 }
 
+/// Fill in requested key copies (`key_data == Some("")` markers from the
+/// editor): read the key file, or keep the copy the old profile already had —
+/// the file on disk may be long gone, that is the feature's point.
+fn vault_keys(profile: &mut SessionProfile, old: Option<&SessionProfile>) -> Result<(), String> {
+    let old_nodes: Vec<&HostProfile> =
+        old.map(|p| p.route.nodes()).unwrap_or_default();
+    let mut nodes: Vec<&mut HostProfile> = profile.route.hops.iter_mut().collect();
+    nodes.push(&mut profile.route.target);
+    for node in nodes {
+        let AuthMethod::PublicKey { key_path, key_data, .. } = &mut node.auth_method else {
+            continue;
+        };
+        if key_data.as_deref() != Some("") {
+            continue;
+        }
+        let path = expand_home(key_path);
+        match std::fs::read_to_string(&path) {
+            Ok(pem) => *key_data = Some(pem),
+            Err(read_err) => {
+                let carried = old_nodes.iter().find_map(|o| match &o.auth_method {
+                    AuthMethod::PublicKey { key_path: kp, key_data: Some(d), .. }
+                        if kp == key_path && !d.is_empty() =>
+                    {
+                        Some(d.clone())
+                    }
+                    _ => None,
+                });
+                match carried {
+                    Some(d) => *key_data = Some(d),
+                    None => return Err(format!("ключ не прочитан: {path}: {read_err}")),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The selected profile ids plus every profile they hop-reference,
 /// transitively — an exported subset must carry its dependencies.
 fn ref_closure(
@@ -1422,13 +1469,15 @@ fn node_json(h: &HostProfile) -> Value {
     if let Some(rid) = h.hop_ref {
         return json!({"ref": rid.to_string()});
     }
-    let (auth, key) = match &h.auth_method {
-        AuthMethod::Password => ("password", String::new()),
-        AuthMethod::Agent => ("agent", String::new()),
-        AuthMethod::PublicKey { key_path, .. } => ("key", key_path.clone()),
+    let (auth, key, key_stored) = match &h.auth_method {
+        AuthMethod::Password => ("password", String::new(), false),
+        AuthMethod::Agent => ("agent", String::new(), false),
+        AuthMethod::PublicKey { key_path, key_data, .. } => {
+            ("key", key_path.clone(), key_data.is_some())
+        }
     };
     json!({"user": h.username, "host": h.address, "port": h.port, "auth": auth, "key": key,
-           "password": h.password.clone().unwrap_or_default()})
+           "key_stored": key_stored, "password": h.password.clone().unwrap_or_default()})
 }
 
 fn host_items(profiles: &[SessionProfile]) -> Value {
@@ -1476,6 +1525,13 @@ fn node_from_json(v: &Value) -> HostProfile {
                 if k.is_empty() { "~/.ssh/id_ed25519".into() } else { k }
             },
             passphrase_protected: false,
+            // `Some("")` is a marker "copy requested": save_host replaces it
+            // with the key file's content (or the previously stored copy).
+            key_data: v
+                .get("key_store")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false)
+                .then(String::new),
         },
         _ => AuthMethod::Agent,
     };
@@ -1570,8 +1626,13 @@ fn profile_from_json(host: &Value) -> SessionProfile {
 /// `-J user@host:port,…` (ProxyJump); the target carries its own port and key.
 /// Stored passwords aren't placed on the command line (they'd leak into `ps`);
 /// [`open_in_external_terminal`] injects them via an `SSH_ASKPASS` helper.
-pub(crate) fn build_ssh_argv(profile: &SessionProfile) -> Vec<String> {
+/// The profile's chain as external-ssh arguments. The second value lists
+/// transient secret files backing the argv (a key vaulted in the config is
+/// materialized as a 0600 file — external ssh reads keys only from disk);
+/// the caller removes them once ssh no longer needs them.
+pub(crate) fn build_ssh_argv(profile: &SessionProfile) -> (Vec<String>, Vec<std::path::PathBuf>) {
     let mut argv = vec!["ssh".to_string()];
+    let mut temp_keys = Vec::new();
     let hops = &profile.route.hops;
     if !hops.is_empty() {
         let chain = hops
@@ -1587,14 +1648,41 @@ pub(crate) fn build_ssh_argv(profile: &SessionProfile) -> Vec<String> {
         argv.push("-p".into());
         argv.push(target.port.to_string());
     }
-    if let AuthMethod::PublicKey { key_path, .. } = &target.auth_method {
-        if !key_path.is_empty() {
+    if let AuthMethod::PublicKey { key_path, key_data, .. } = &target.auth_method {
+        let identity = match key_data {
+            Some(pem) => write_transient_key(pem)
+                .map(|p| {
+                    let s = p.display().to_string();
+                    temp_keys.push(p);
+                    s
+                })
+                .ok(),
+            None => None,
+        }
+        .or_else(|| (!key_path.is_empty()).then(|| key_path.clone()));
+        if let Some(p) = identity {
             argv.push("-i".into());
-            argv.push(key_path.clone());
+            argv.push(p);
         }
     }
     argv.push(format!("{}@{}", target.username, target.address));
-    argv
+    (argv, temp_keys)
+}
+
+/// A vaulted private key written to a throwaway 0600 file in
+/// `$XDG_RUNTIME_DIR` (tmpfs), for external ssh/rsync. Callers delete it.
+fn write_transient_key(pem: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    let path = dir.join(format!("hopterm-key-{}.pem", uuid::Uuid::new_v4()));
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+    f.write_all(pem.as_bytes())?;
+    Ok(path)
 }
 
 /// Write a throwaway `SSH_ASKPASS` helper that answers ssh's password prompts
@@ -1668,7 +1756,16 @@ pub(crate) fn password_creds(profile: &SessionProfile) -> Vec<(String, String)> 
 /// fallbacks — each with its own "run this command" flag. Returns the terminal
 /// that was launched, or an error string if none could be started.
 fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String> {
-    let mut argv = build_ssh_argv(profile);
+    let (mut argv, temp_keys) = build_ssh_argv(profile);
+    if !temp_keys.is_empty() {
+        // Like the askpass helper below: gone once auth has had time to finish.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(120));
+            for p in temp_keys {
+                let _ = std::fs::remove_file(p);
+            }
+        });
+    }
     let creds = password_creds(profile);
 
     // Feed those passwords to ssh through a transient askpass helper so nothing
@@ -1909,6 +2006,43 @@ mod hop_ref_tests {
 
         let dangling = profile("d", vec![ref_hop(ProfileId::new(uuid::Uuid::new_v4()))], "t");
         assert!(resolve_profile(&dangling, &all).is_err());
+    }
+
+    #[test]
+    fn vault_keys_reads_carries_and_fails() {
+        let dir = std::env::temp_dir().join(format!("hopterm-vault-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_file = dir.join("k.pem").display().to_string();
+        std::fs::write(&key_file, "PEM-BODY").unwrap();
+        let requested = |path: &str| AuthMethod::PublicKey {
+            key_path: path.into(),
+            passphrase_protected: false,
+            key_data: Some(String::new()),
+        };
+        let stored = |n: &HostProfile| match &n.auth_method {
+            AuthMethod::PublicKey { key_data, .. } => key_data.clone(),
+            _ => None,
+        };
+
+        let mut p = profile("p", vec![], "t");
+        p.route.target.auth_method = requested(&key_file);
+        vault_keys(&mut p, None).unwrap();
+        assert_eq!(stored(&p.route.target).as_deref(), Some("PEM-BODY"));
+
+        // key file deleted -> the copy carries over from the old profile
+        std::fs::remove_file(&key_file).unwrap();
+        let old = p.clone();
+        let mut p2 = profile("p", vec![], "t");
+        p2.route.target.auth_method = requested(&key_file);
+        vault_keys(&mut p2, Some(&old)).unwrap();
+        assert_eq!(stored(&p2.route.target).as_deref(), Some("PEM-BODY"));
+
+        // no file, nothing to carry -> explicit error, not a silent save
+        let mut p3 = profile("p", vec![], "t");
+        p3.route.target.auth_method = requested(&key_file);
+        assert!(vault_keys(&mut p3, None).unwrap_err().contains("не прочитан"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

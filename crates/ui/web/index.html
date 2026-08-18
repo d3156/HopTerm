@@ -2023,7 +2023,8 @@ function hopRow(kind, n, d) {
       <div><label class="form-label">Аутентификация</label>
         <select class="form-select" data-field="auth" onchange="authChanged(this)">${opt('key','SSH ключ')}${opt('password','Пароль')}${opt('agent','SSH Agent')}</select></div>
       <div>
-        <div data-authfield="key"${auth==='key'?'':' style="display:none"'}><label class="form-label">Путь к ключу</label><input class="form-input form-input-mono" data-field="key" value="${esc(d.key||'')}" placeholder="~/.ssh/id_ed25519" /></div>
+        <div data-authfield="key"${auth==='key'?'':' style="display:none"'}><label class="form-label">Путь к ключу</label><input class="form-input form-input-mono" data-field="key" value="${esc(d.key||'')}" placeholder="~/.ssh/id_ed25519" />
+          <label class="form-hint" style="display:flex;gap:6px;align-items:center;margin-top:4px;cursor:pointer"><input type="checkbox" data-field="key_store"${d.key_stored?' checked':''} /> копия ключа в конфиге${d.key_stored?' (есть)':''}</label></div>
         <div data-authfield="password"${auth==='password'?'':' style="display:none"'}><label class="form-label">Пароль</label><input class="form-input form-input-mono" type="password" data-field="password" value="${esc(d.password||'')}" placeholder="сохранится в ~/.hopterm" /></div>
         <div data-authfield="agent"${auth==='agent'?'':' style="display:none"'}><label class="form-label">Способ</label><div class="form-hint" style="padding-top:9px">SSH-агент (SSH_AUTH_SOCK)</div></div>
       </div>
@@ -2084,7 +2085,9 @@ function readHop(item) {
   const f = (k) => { const el = item.querySelector('[data-field="'+k+'"]'); return el ? el.value.trim() : ''; };
   const ref = f('ref');
   if (ref) return { ref };
-  return { user: f('user'), host: f('host'), port: parseInt(f('port'))||22, auth: f('auth'), key: f('key'), password: f('password') };
+  const keyStore = item.querySelector('[data-field="key_store"]');
+  return { user: f('user'), host: f('host'), port: parseInt(f('port'))||22, auth: f('auth'), key: f('key'),
+    key_store: !!(keyStore && keyStore.checked), password: f('password') };
 }
 function serializeHost() {
   const items = [...document.querySelectorAll('#hop-list .hop-item')];

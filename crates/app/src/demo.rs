@@ -24,6 +24,7 @@ fn key(path: &str) -> AuthMethod {
     AuthMethod::PublicKey {
         key_path: path.into(),
         passphrase_protected: false,
+        key_data: None,
     }
 }
 
