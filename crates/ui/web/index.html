@@ -462,6 +462,7 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
 .cmd-type-download { background: color-mix(in oklch, var(--color-blue) 12%, transparent); color: var(--color-blue); }
 .cmd-type-upload { background: color-mix(in oklch, var(--color-orange) 12%, transparent); color: var(--color-orange); }
 .cmd-type-exec { background: color-mix(in oklch, var(--color-success) 12%, transparent); color: var(--color-success); }
+.cmd-type-forward { background: color-mix(in oklch, var(--color-primary) 12%, transparent); color: var(--color-primary); }
 .cmd-name { font-weight: 600; font-size: var(--text-sm); flex: 1; }
 .cmd-host-tag {
   font-size: var(--text-xs); color: var(--color-text-muted);
@@ -798,6 +799,10 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
     <div id="view-commands" class="view">
       <div class="topbar">
         <span class="topbar-title">Быстрые команды</span>
+        <button class="btn btn-ghost btn-sm" onclick="openCmdHelp()" title="Справка по типам команд">
+          <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          Справка
+        </button>
         <select id="cmd-filter" class="form-select" style="width:180px;padding:6px 28px 6px 10px;margin-left:auto" onchange="renderCommands()">
           <option value="">Все хосты</option>
         </select>
@@ -1182,6 +1187,7 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           <button type="button" class="btn btn-ghost btn-sm" id="type-download" onclick="selectCmdType('download')">↓ Скачать</button>
           <button type="button" class="btn btn-ghost btn-sm" id="type-upload" onclick="selectCmdType('upload')">↑ Загрузить</button>
           <button type="button" class="btn btn-ghost btn-sm" id="type-pipeline" onclick="selectCmdType('pipeline')">⛓ Пайплайн</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="type-forward" onclick="selectCmdType('forward')">⇄ Пробросы</button>
         </div>
       </div>
 
@@ -1218,6 +1224,15 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
           </div>
         </div>
         <div class="form-hint" style="margin-top:var(--space-2)">Скачивание по SFTP через ту же цепочку хопов, с прогресс-баром на вкладке «Передачи».</div>
+      </div>
+
+      <!-- ⇄ forwards -->
+      <div id="cmd-form-forward" class="cmd-form" style="display:none">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Пробросы — по одному на строку <span class="required">*</span></label>
+          <textarea class="form-input form-input-mono" id="cmd-fw-text" rows="4" placeholder="8080:127.0.0.1:80&#10;5433:db.internal:5432&#10;socks 1080" style="resize:vertical;min-height:90px" oninput="updateCmdPreview()"></textarea>
+          <div class="form-hint">Форматы: <code>локальный:хост:порт</code> (ssh -L), <code>локальный:порт</code> = на 127.0.0.1 хоста, <code>socks порт</code> (ssh -D). Запуск поднимает все туннели разом; управление — на вкладке «Проброс портов».</div>
+        </div>
       </div>
 
       <!-- ↑ upload -->
@@ -1286,7 +1301,7 @@ function toggleTheme() {
 let cmdBuildType = 'exec';
 function selectCmdType(t) {
   cmdBuildType = t;
-  ['exec','download','upload','pipeline'].forEach(x => {
+  ['exec','download','upload','pipeline','forward'].forEach(x => {
     document.getElementById('type-'+x).className = 'btn btn-sm ' + (x===t ? 'btn-primary' : 'btn-ghost');
     const f = document.getElementById('cmd-form-'+x); if (f) f.style.display = (x===t ? 'block' : 'none');
   });
@@ -1301,7 +1316,28 @@ function buildCommandText(type) {
   if (type === 'pipeline') return (document.getElementById('cmd-pipe-text')||{value:''}).value.split('\n').map(s=>s.trim()).filter(Boolean).join('\n');
   if (type === 'download') { const s = val('cmd-dl-src'), d = val('cmd-dl-dst') || '~/Downloads'; return `# скачать по rsync (докачка при обрыве)\nrsync ${hn}:${s||'/path/on/host'} → ${d}`; }
   if (type === 'upload')   { const s = val('cmd-ul-src'), d = val('cmd-ul-dst'); return `# отправить по rsync (докачка при обрыве)\nrsync ${s||'/local/file'} → ${hn}:${d||'/remote/dir/'}`; }
+  if (type === 'forward')  {
+    const fws = parseForwards(val('cmd-fw-text'));
+    if (!fws.length) return '# пробросы через сессию хоста\nssh -L локальный:хост:порт | socks порт';
+    return '# пробросы через сессию хоста\n' + fws.map(f =>
+      f.kind === 'socks' ? `ssh -D ${f.local}` : `ssh -L ${f.local}:${f.host}:${f.port}`).join('\n');
+  }
   return '';
+}
+/* One tunnel per line: "8080:host:5432", "8080:80" / "8080" (127.0.0.1 of the
+   host), "socks 1080". Unparsable lines are dropped. */
+function parseForwards(text) {
+  const out = [];
+  for (const raw of (text || '').split('\n')) {
+    const s = raw.trim().toLowerCase();
+    if (!s) continue;
+    let m;
+    if ((m = s.match(/^(?:socks|-?d)\s+(\d+)$/)))            out.push({ kind:'socks', local:+m[1] });
+    else if ((m = s.match(/^(\d+):(\S+):(\d+)$/)))           out.push({ kind:'local', local:+m[1], host:m[2], port:+m[3] });
+    else if ((m = s.match(/^(\d+):(\d+)$/)))                 out.push({ kind:'local', local:+m[1], host:'127.0.0.1', port:+m[2] });
+    else if ((m = s.match(/^(\d+)$/)))                       out.push({ kind:'local', local:+m[1], host:'127.0.0.1', port:+m[1] });
+  }
+  return out;
 }
 function updateCmdPreview() {
   const el = document.getElementById('cmd-preview'); if (!el) return;
@@ -1426,6 +1462,7 @@ const CMD_TYPES = {
   upload:   { cls:'cmd-type-upload',   label:'ЗАГРУЗИТЬ', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>' },
   exec:     { cls:'cmd-type-exec',     label:'СКРИПТ', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="4 17 10 11 4 5"/></svg>' },
   pipeline: { cls:'cmd-type-exec',     label:'ПАЙПЛАЙН', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>' },
+  forward:  { cls:'cmd-type-forward',  label:'ПРОБРОСЫ', icon:'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>' },
 };
 function cmdType(c) {
   if (c.type && CMD_TYPES[c.type]) return c.type;          // explicit type from the builder
@@ -1503,10 +1540,25 @@ function fillCmdHosts(selected) {
   }
 }
 function resetCmdForm() {
-  ['cmd-name','cmd-exec-text','cmd-pipe-text','cmd-dl-src','cmd-ul-src','cmd-ul-dst'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  ['cmd-name','cmd-exec-text','cmd-pipe-text','cmd-dl-src','cmd-ul-src','cmd-ul-dst','cmd-fw-text'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
   document.getElementById('cmd-dl-dst').value = '~/Downloads';
   document.getElementById('cmd-confirm').checked = false;
 }
+function openCmdHelp() {
+  promptModal(`
+    <div class="modal-header"><span class="modal-title">Типы команд</span></div>
+    <div class="modal-body" style="font-size:var(--text-sm);line-height:1.55">
+      <p><b>▶ Выполнить</b> — команда набирается в терминале хоста, как руками. Сессия откроется сама, если ещё не открыта.</p>
+      <p><b>⛓ Пайплайн</b> — несколько команд по строке, выполняются последовательно в одной сессии.</p>
+      <p><b>↓ Скачать</b> — файл/маска с хоста через rsync с докачкой при обрыве (SFTP-фолбэк); прогресс — на вкладке «Передачи».</p>
+      <p><b>↑ Загрузить</b> — локальный файл или папка на хост через rsync с докачкой; папка уезжает деревом.</p>
+      <p><b>⇄ Пробросы</b> — набор туннелей одним кликом: <code>8080:127.0.0.1:80</code> (ssh -L), <code>socks 1080</code> (ssh -D). Управление и остановка — на вкладке «Проброс портов».</p>
+      <p class="form-hint">Все операции идут через сессию HopTerm по всей цепочке хопов профиля — отдельный ssh не нужен.</p>
+    </div>
+    <div class="modal-footer"><button class="btn btn-primary" data-ok>Понятно</button></div>`,
+    (back) => back._close());
+}
+
 function openCmdModal() {
   editingCmdId = null;
   document.getElementById('cmd-modal-title').textContent = 'Конструктор команды';
@@ -1527,6 +1579,7 @@ function editCmd(c) {
   if (type === 'pipeline')      document.getElementById('cmd-pipe-text').value = c.command || '';
   else if (type === 'download') { document.getElementById('cmd-dl-src').value = c.src || ''; document.getElementById('cmd-dl-dst').value = c.dst || '~/Downloads'; }
   else if (type === 'upload')   { document.getElementById('cmd-ul-src').value = c.src || ''; document.getElementById('cmd-ul-dst').value = c.dst || ''; }
+  else if (type === 'forward')  document.getElementById('cmd-fw-text').value = c.fw || '';
   else                          document.getElementById('cmd-exec-text').value = c.command || '';
   document.getElementById('cmd-delete-btn').style.display = 'inline-flex';
   selectCmdType(type);
@@ -1545,6 +1598,10 @@ function saveCmd() {
   } else if (type === 'upload') {
     payload.src = val('cmd-ul-src'); payload.dst = val('cmd-ul-dst');
     if (!payload.src || !payload.dst) { alert('Укажите локальный файл и папку назначения'); return; }
+  } else if (type === 'forward') {
+    payload.fw = val('cmd-fw-text');
+    if (!parseForwards(payload.fw).length) { alert('Укажите хотя бы один проброс (напр. 8080:127.0.0.1:80)'); return; }
+    payload.command = buildCommandText(type).replace(/^#.*\n/, '');
   } else {
     payload.command = buildCommandText(type);
     if (!payload.command) { alert('Введите команду'); return; }
@@ -1575,6 +1632,17 @@ function runCmd(c) {
       if (type === 'download') send({ cmd:'download', id: key, remote: c.src, local_dir: c.dst });
       else { const fn = (c.src||'').replace(/\/+$/,'').split('/').pop(); send({ cmd:'upload', id: key, local: c.src, remote: (c.dst||'').replace(/\/?$/,'/') + fn }); }
       showView('transfers');
+    };
+    if (wasLive) run(); else pendingXfer[key] = run;
+    return;
+  }
+  if (type === 'forward') {
+    const run = () => {
+      for (const f of parseForwards(c.fw)) {
+        if (f.kind === 'socks') send({ cmd:'socks_start', id: key, local_port: f.local });
+        else send({ cmd:'forward_start', id: key, local_port: f.local, remote_host: f.host, remote_port: f.port });
+      }
+      showView('forwards');
     };
     if (wasLive) run(); else pendingXfer[key] = run;
     return;
