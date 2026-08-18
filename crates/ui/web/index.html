@@ -254,7 +254,7 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
 .btn-danger:hover { background: color-mix(in oklch, var(--color-notification) 10%, var(--color-surface)); }
 .btn-sm { padding: var(--space-1) var(--space-3); font-size: var(--text-xs); }
 
-.content { flex: 1; overflow-y: auto; padding: var(--space-6); }
+.content { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-6); }
 
 /* ===================== TABS ===================== */
 .tabs { display: flex; border-bottom: 1px solid var(--color-divider); margin-bottom: var(--space-6); }
@@ -647,11 +647,10 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
 .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
 
 /* ===================== PAGE VIEWS ===================== */
+/* An active view fills the pane as a flex column so its .content scrolls
+   when the cards overflow — .main clips anything taller than the window. */
 .view { display: none; }
-.view.active { display: block; }
-/* Forwards view fills the pane so its .content scrolls when the cards overflow. */
-#view-forwards.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-#view-forwards .content { min-height: 0; }
+.view.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* ===================== EMPTY STATE ===================== */
 .empty-state {
