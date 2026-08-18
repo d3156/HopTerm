@@ -1913,8 +1913,14 @@ fn open_in_external_terminal(profile: &SessionProfile) -> Result<String, String>
         if !sep.is_empty() {
             cmd.arg(sep);
         }
-        cmd.args(&run_argv)
-            .stdin(Stdio::null())
+        // fly-term's `-e` takes the command as ONE string (its documented
+        // usage is `-e "cmd"`), not a trailing argv like xterm's.
+        if bin.rsplit('/').next() == Some("fly-term") {
+            cmd.arg(join_command(&run_argv));
+        } else {
+            cmd.args(&run_argv);
+        }
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         match cmd.spawn() {
@@ -2090,6 +2096,21 @@ fn spawn_waypipe_app(profile: &SessionProfile, app: &str) -> Result<(), String> 
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// argv joined into one command string: plain tokens as-is (survives a naive
+/// space split), tokens with specials single-quoted (survives a shell).
+fn join_command(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| {
+            if a.is_empty() || a.chars().any(|c| c.is_whitespace() || "'\"\\$".contains(c)) {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn local_tool_exists(bin: &str) -> bool {
