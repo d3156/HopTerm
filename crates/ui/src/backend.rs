@@ -137,6 +137,18 @@ fn download_dir() -> String {
     fallback
 }
 
+/// Expand a leading `~` to `$HOME` in a user-typed local path.
+fn expand_home(path: &str) -> String {
+    let home = || std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    if path == "~" {
+        home()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("{}/{rest}", home())
+    } else {
+        path.to_string()
+    }
+}
+
 fn save_commands(path: &str, commands: &[Value]) {
     if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -511,11 +523,37 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
             }
 
             "upload" => {
-                let local = msg.get("local").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let local =
+                    expand_home(msg.get("local").and_then(|v| v.as_str()).unwrap_or("").trim());
                 let remote = msg.get("remote").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                start_transfer(
-                    &sessions, &manager, &proxy, &transfers, &id, "up", local, remote,
-                );
+                let Some(profile) = sessions.lock().unwrap().get(&id).map(|a| a.profile.clone())
+                else {
+                    emit(&proxy, json!({"ev":"sftp_err","key":id,"error":"нет активного соединения"}));
+                    continue;
+                };
+                if std::fs::metadata(&local).is_err() {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":format!("нет такого локального файла: {local}")}));
+                    continue;
+                }
+                // Uploads go over a local rsync (directories, resume,
+                // auto-retry); SFTP stays the single-file fallback.
+                let fallback: Box<dyn FnOnce(String) + Send> = {
+                    let (sessions, manager, proxy, transfers) =
+                        (sessions.clone(), manager.clone(), proxy.clone(), transfers.clone());
+                    let (key, local, remote) = (id.clone(), local.clone(), remote.clone());
+                    Box::new(move |reason: String| {
+                        if std::fs::metadata(&local).map(|m| m.is_dir()).unwrap_or(false) {
+                            emit(&proxy, json!({"ev":"toast","error":true,
+                                "text":format!("{reason} — папку можно отправить только по rsync")}));
+                            return;
+                        }
+                        emit(&proxy, json!({"ev":"toast","error":false,
+                            "text":format!("{reason} — отправка по SFTP (без докачки)")}));
+                        start_transfer(&sessions, &manager, &proxy, &transfers, &key, "up", local, remote);
+                    })
+                };
+                crate::rsync::spawn_upload(proxy.clone(), transfers.clone(), profile, local, remote, fallback);
             }
 
             "download" => {
@@ -524,13 +562,7 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 // A "download" command can pin a destination folder; otherwise ~/Downloads.
                 let dir = match msg.get("local_dir").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                     Some(d) => {
-                        let expanded = if let Some(rest) = d.strip_prefix("~/") {
-                            format!("{}/{rest}", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
-                        } else if d == "~" {
-                            std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
-                        } else {
-                            d.to_string()
-                        };
+                        let expanded = expand_home(d);
                         let _ = std::fs::create_dir_all(&expanded);
                         expanded
                     }

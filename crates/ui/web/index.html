@@ -826,7 +826,7 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
             <button class="btn btn-ghost btn-sm" onclick="sftpGo(document.getElementById('sftp-path').value)">Открыть</button>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:12px">
-            <input class="form-input form-input-mono" id="sftp-local" placeholder="локальный файл для загрузки, напр. /home/me/file.txt" style="flex:1" />
+            <input class="form-input form-input-mono" id="sftp-local" placeholder="локальный файл или папка, напр. /home/me/file.txt" style="flex:1" />
             <button class="btn btn-primary btn-sm" onclick="sftpUpload()">⤴ Загрузить сюда</button>
           </div>
           <div class="cmd-card"><div id="sftp-list" class="sftp-list" style="padding:6px"></div></div>
@@ -1296,7 +1296,7 @@ function buildCommandText(type) {
   if (type === 'exec')     return val('cmd-exec-text');
   if (type === 'pipeline') return (document.getElementById('cmd-pipe-text')||{value:''}).value.split('\n').map(s=>s.trim()).filter(Boolean).join('\n');
   if (type === 'download') { const s = val('cmd-dl-src'), d = val('cmd-dl-dst') || '~/Downloads'; return `# скачать по rsync (докачка при обрыве)\nrsync ${hn}:${s||'/path/on/host'} → ${d}`; }
-  if (type === 'upload')   { const s = val('cmd-ul-src'), d = val('cmd-ul-dst'); return `# загрузить по SFTP с прогрессом\nsftp ${s||'/local/file'} → ${hn}:${d||'/remote/dir/'}`; }
+  if (type === 'upload')   { const s = val('cmd-ul-src'), d = val('cmd-ul-dst'); return `# отправить по rsync (докачка при обрыве)\nrsync ${s||'/local/file'} → ${hn}:${d||'/remote/dir/'}`; }
   return '';
 }
 function updateCmdPreview() {

@@ -1,13 +1,14 @@
-//! Resumable downloads over a local `rsync` process.
+//! Resumable transfers (downloads and uploads) over a local `rsync` process.
 //!
 //! rsync rides an external `ssh` that reproduces the profile's hop chain the
 //! same way the external-terminal feature does (`-J`, port, key, stored
 //! passwords via the askpass helper). `--partial --inplace` keeps interrupted
 //! data on disk and the delta algorithm resumes from it without re-sending
-//! what is already local; after a transient failure (dropped connection,
-//! timeout) the job re-runs rsync with exponential backoff until it finishes,
-//! hits a permanent error, or is cancelled. Wildcards are expanded by the
-//! remote rsync — no client-side glob pass is needed.
+//! what the receiver already has; after a transient failure (dropped
+//! connection, timeout) the job re-runs rsync with exponential backoff until
+//! it finishes, hits a permanent error, or is cancelled. Wildcards in remote
+//! paths are expanded by the remote rsync — no client-side glob pass is
+//! needed. Uploads are recursive: a directory is sent as a tree.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -64,7 +65,7 @@ fn classify(code: Option<i32>, stderr: &str) -> Outcome {
         return Outcome::Fallback("локальный ssh не понимает опции".into());
     }
     if s.contains("no such file or directory") {
-        return Outcome::Fatal("нет такого файла на хосте".into());
+        return Outcome::Fatal("нет такого файла".into());
     }
     match code {
         // The remote shell answers a missing rsync with 127 — locale-proof,
@@ -130,11 +131,17 @@ struct Job {
     proxy: EventLoopProxy<UserEvent>,
     id: String,
     name: String,
+    /// `"down"` or `"up"` — event tag and rsync argument orientation.
+    dir: &'static str,
     ssh_e: String,
     src: String,
-    local: String,
+    dest: String,
     askpass: Option<std::path::PathBuf>,
     cancel: CancelToken,
+}
+
+fn basename(path: &str) -> String {
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or("file").to_string()
 }
 
 /// Start a resumable download job: `remote` (a path, or a wildcard the remote
@@ -149,24 +156,63 @@ pub(crate) fn spawn_download(
     local: String,
     fallback: Box<dyn FnOnce(String) + Send>,
 ) {
-    let cancel = CancelToken::new();
-    let id = uuid::Uuid::new_v4().to_string();
-    transfers.lock().unwrap().insert(id.clone(), cancel.clone());
-
     let creds = password_creds(&profile);
     let (ssh_e, user_host) = ssh_command(&profile, creds.is_empty());
     let job = Job {
         proxy,
-        id,
-        name: remote.rsplit('/').next().unwrap_or("file").to_string(),
+        id: uuid::Uuid::new_v4().to_string(),
+        name: basename(&remote),
+        dir: "down",
         ssh_e,
         src: format!("{user_host}:{remote}"),
-        local,
+        dest: local,
         // The helper must outlive every retry (a reconnect an hour in still
         // authenticates with it) — removed when the job ends, not on a timer.
         askpass: if creds.is_empty() { None } else { write_askpass_helper(&creds).ok() },
-        cancel,
+        cancel: CancelToken::new(),
     };
+    launch(job, transfers, fallback);
+}
+
+/// Start a resumable upload job: the local `local` (file or directory) lands
+/// at `remote` (full destination path — for a directory its tree is mirrored
+/// there). `fallback` runs instead of a result when rsync is unavailable.
+pub(crate) fn spawn_upload(
+    proxy: EventLoopProxy<UserEvent>,
+    transfers: Arc<Mutex<HashMap<String, CancelToken>>>,
+    profile: SessionProfile,
+    local: String,
+    remote: String,
+    fallback: Box<dyn FnOnce(String) + Send>,
+) {
+    let creds = password_creds(&profile);
+    let (ssh_e, user_host) = ssh_command(&profile, creds.is_empty());
+    // A directory source needs a trailing slash: a remote destination path is
+    // treated as the parent to copy *into*, so a bare name would nest as
+    // dest/name/name.
+    let is_dir = std::fs::metadata(&local).map(|m| m.is_dir()).unwrap_or(false);
+    let src = if is_dir { format!("{}/", local.trim_end_matches('/')) } else { local.clone() };
+    let job = Job {
+        proxy,
+        id: uuid::Uuid::new_v4().to_string(),
+        name: basename(&local),
+        dir: "up",
+        ssh_e,
+        src,
+        dest: format!("{user_host}:{remote}"),
+        askpass: if creds.is_empty() { None } else { write_askpass_helper(&creds).ok() },
+        cancel: CancelToken::new(),
+    };
+    launch(job, transfers, fallback);
+}
+
+/// Register the job's cancel token, run the retry loop, report the end.
+fn launch(
+    job: Job,
+    transfers: Arc<Mutex<HashMap<String, CancelToken>>>,
+    fallback: Box<dyn FnOnce(String) + Send>,
+) {
+    transfers.lock().unwrap().insert(job.id.clone(), job.cancel.clone());
     tokio::spawn(async move {
         emit(&job.proxy, job.progress_event(0, 0, None));
         let end = job.run().await;
@@ -174,15 +220,16 @@ pub(crate) fn spawn_download(
             let _ = std::fs::remove_file(p);
         }
         transfers.lock().unwrap().remove(&job.id);
+        let local = if job.dir == "down" { &job.dest } else { &job.src };
         match end {
             JobEnd::Done(bytes) => emit(
                 &job.proxy,
-                json!({"ev":"xfer","id":job.id,"name":job.name,"dir":"down","proto":"rsync",
-                       "t":bytes,"total":bytes,"status":"done","local":job.local}),
+                json!({"ev":"xfer","id":job.id,"name":job.name,"dir":job.dir,"proto":"rsync",
+                       "t":bytes,"total":bytes,"status":"done","local":local}),
             ),
             JobEnd::Error(e) => emit(
                 &job.proxy,
-                json!({"ev":"xfer","id":job.id,"name":job.name,"dir":"down","proto":"rsync",
+                json!({"ev":"xfer","id":job.id,"name":job.name,"dir":job.dir,"proto":"rsync",
                        "status":"error","error":e}),
             ),
             JobEnd::Fallback(reason) => {
@@ -195,7 +242,7 @@ pub(crate) fn spawn_download(
 
 impl Job {
     fn progress_event(&self, t: u64, total: u64, note: Option<String>) -> serde_json::Value {
-        json!({"ev":"xfer","id":self.id,"name":self.name,"dir":"down","proto":"rsync",
+        json!({"ev":"xfer","id":self.id,"name":self.name,"dir":self.dir,"proto":"rsync",
                "t":t,"total":total,"status":"running","note":note})
     }
 
@@ -227,7 +274,7 @@ impl Job {
                 // "skipping directory/non-regular file" + zero bytes is rsync
                 // politely doing nothing — a green card would be a lie.
                 Outcome::Success if skipped && best == 0 => {
-                    return JobEnd::Error("ничего не скачано: каталоги/спецфайлы пропущены".into())
+                    return JobEnd::Error("ничего не передано: каталоги/спецфайлы пропущены".into())
                 }
                 Outcome::Success => return JobEnd::Done(best),
                 Outcome::Fallback(reason) => return JobEnd::Fallback(reason),
@@ -265,15 +312,16 @@ impl Job {
     ) -> std::io::Result<(Option<i32>, String, bool)> {
         let mut cmd = tokio::process::Command::new("rsync");
         // -L follows symlinks into their target files, like the SFTP path did.
-        cmd.arg("--partial")
-            .arg("--inplace")
-            .arg("-L")
-            .arg(format!("--timeout={IO_TIMEOUT_SECS}"))
+        cmd.arg("--partial").arg("--inplace").arg("-L");
+        if self.dir == "up" {
+            cmd.arg("-r"); // a directory is sent as a tree
+        }
+        cmd.arg(format!("--timeout={IO_TIMEOUT_SECS}"))
             .arg("--info=progress2")
             .arg("-e")
             .arg(&self.ssh_e)
             .arg(&self.src)
-            .arg(&self.local)
+            .arg(&self.dest)
             .env("LC_ALL", "C")
             .env("LANG", "C")
             .stdin(std::process::Stdio::null())
