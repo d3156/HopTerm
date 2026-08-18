@@ -293,6 +293,20 @@ impl ProfileStore for JsonStore {
     }
 }
 
+/// Seal arbitrary config-shaped JSON under a PIN into the same envelope
+/// `config.json` uses. A file exported this way both opens with that PIN and
+/// drops in directly as an encrypted config.
+pub fn seal_with_pin(json: &str, pin: &str) -> String {
+    let salt = crypto::random_salt();
+    let key = crypto::derive_key(pin, &salt);
+    let env = Envelope {
+        kdf: KDF_NAME.into(),
+        salt: B64.encode(salt),
+        data: B64.encode(crypto::seal(&key, json.as_bytes())),
+    };
+    serde_json::to_string_pretty(&env).expect("envelope always serializes")
+}
+
 /// `Some` if `text` is an encryption envelope; `Err` if it pretends to be one
 /// but is unusable — a broken envelope must never read as an empty plain config
 /// (all [`ConfigDoc`] fields are defaulted), or a later save would clobber it.
@@ -403,6 +417,18 @@ mod tests {
     use super::*;
     use hopterm_domain::*;
     use uuid::Uuid;
+
+    #[test]
+    fn sealed_export_opens_with_pin_only() {
+        let sealed = seal_with_pin(r#"{"profiles":[]}"#, "1234");
+        let env = parse_envelope(&sealed).unwrap().expect("is an envelope");
+        let salt: [u8; crypto::SALT_LEN] =
+            B64.decode(env.salt).unwrap().try_into().unwrap();
+        let data = B64.decode(env.data).unwrap();
+        let key = crypto::derive_key("1234", &salt);
+        assert_eq!(crypto::open(&key, &data).unwrap(), br#"{"profiles":[]}"#);
+        assert!(crypto::open(&crypto::derive_key("wrong", &salt), &data).is_none());
+    }
 
     fn sample_profile() -> SessionProfile {
         let target = HostProfile {

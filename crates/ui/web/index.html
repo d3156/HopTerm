@@ -2115,12 +2115,16 @@ function openExportHosts() {
   promptModal(`
     <div class="modal-header"><span class="modal-title">Экспорт хостов</span></div>
     <div class="modal-body"><div style="max-height:45vh;overflow-y:auto">${rows}</div>
-    <div class="form-hint" style="margin-top:var(--space-2)">Файл в формате конфига HopTerm. Хопы-ссылки выбранных хостов добавятся сами. Пароли в файл не включаются.</div></div>
+    <div style="margin-top:var(--space-3)"><label class="form-label">PIN файла</label>
+      <input class="form-input" type="password" data-pin placeholder="обязателен — файл шифруется" /></div>
+    <div class="form-hint" style="margin-top:var(--space-2)">Файл — шифрованный конфиг HopTerm (пароли включены): открывается этим PIN, годится и как config.json. Хопы-ссылки выбранных хостов добавятся сами.</div></div>
     <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Отмена</button><button class="btn btn-primary" data-ok>Экспортировать</button></div>`,
     (back, cancel) => {
       if (!cancel) {
         const ids = [...back.querySelectorAll('input:checked')].map(i => i.value);
-        if (ids.length) send({ cmd:'export_hosts', ids });
+        const pin = back.querySelector('[data-pin]').value;
+        if (!pin) { back.querySelector('[data-pin]').focus(); return; }
+        if (ids.length) send({ cmd:'export_hosts', ids, pin });
       }
       back._close();
     });

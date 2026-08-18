@@ -1855,6 +1855,7 @@ dependencies = [
  "hopterm-domain",
  "hopterm-logging",
  "hopterm-security",
+ "hopterm-storage",
  "serde",
  "serde_json",
  "tao",

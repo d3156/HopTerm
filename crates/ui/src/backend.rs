@@ -426,16 +426,23 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                 }
             }
 
-            // Export chosen hosts (plus their reference-hop closure) as a
-            // config-shaped JSON. Stored passwords stay home: the export is a
-            // plain file even when the config itself is PIN-encrypted.
+            // Export chosen hosts (plus their reference-hop closure), stored
+            // passwords included — the file is always sealed with a PIN in the
+            // same envelope as the config, so it also drops in as an encrypted
+            // config.json.
             "export_hosts" => {
                 let ids: std::collections::HashSet<String> = msg
                     .get("ids")
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                     .unwrap_or_default();
+                let pin = msg.get("pin").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if ids.is_empty() {
+                    continue;
+                }
+                if pin.is_empty() {
+                    emit(&proxy, json!({"ev":"toast","error":true,
+                        "text":"Экспорт защищается PIN-кодом — укажите его"}));
                     continue;
                 }
                 let ps = profiles.lock().unwrap().clone();
@@ -443,31 +450,22 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                     ps.iter().filter(|p| ids.contains(&p.id.to_string())).map(|p| p.id),
                     &ps,
                 );
-                let picked: Vec<SessionProfile> = ps
-                    .iter()
-                    .filter(|p| keep.contains(&p.id))
-                    .cloned()
-                    .map(|mut p| {
-                        p.route.target.password = None;
-                        for h in &mut p.route.hops {
-                            h.password = None;
-                        }
-                        p.sudo.password = None;
-                        p
-                    })
-                    .collect();
+                let picked: Vec<SessionProfile> =
+                    ps.iter().filter(|p| keep.contains(&p.id)).cloned().collect();
                 let stamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
                 let path = format!("{}/hopterm-hosts-{stamp}.json", download_dir());
+                let count = picked.len();
                 let doc = json!({"profiles": picked});
-                match serde_json::to_string_pretty(&doc)
+                match serde_json::to_string(&doc)
                     .map_err(|e| e.to_string())
-                    .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()))
+                    .map(|text| hopterm_storage::seal_with_pin(&text, &pin))
+                    .and_then(|sealed| std::fs::write(&path, sealed).map_err(|e| e.to_string()))
                 {
                     Ok(()) => emit(&proxy, json!({"ev":"toast",
-                        "text":format!("Экспортировано хостов: {} — {path} (пароли не включены)", picked.len())})),
+                        "text":format!("Экспортировано хостов: {count} — {path} (зашифровано PIN-кодом)")})),
                     Err(e) => emit(&proxy, json!({"ev":"toast","error":true,
                         "text":format!("Экспорт не удался: {e}")})),
                 }
