@@ -958,8 +958,12 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                         vnc_desktop_flow(conn, proxy2, forwards2, sessions2, session_key,
                                          label, remote_x11vnc_cmd(&display)).await;
                     } else if has("TYPE=GNOME_WAYLAND") {
-                        if has("RDP=ON") {
-                            rdp_connect_flow(conn, proxy2, forwards2, sessions2, session_key, label).await;
+                        // Sharing counts as up only when grd's listener is
+                        // found — "enabled" with a dead daemon must go through
+                        // the enable dialog (its restart brings the port back).
+                        if has("RDP=ON") && det.contains("RDP_PORT=") {
+                            let port = rdp_port_of(&det);
+                            rdp_connect_flow(conn, proxy2, forwards2, sessions2, session_key, label, port).await;
                         } else {
                             emit(&proxy2, json!({"ev":"desktop_setup","key":session_key,
                                 "kind":"gnome_rdp"}));
@@ -1018,9 +1022,8 @@ fi
 grdctl rdp enable && grdctl rdp set-credentials {u} {p} && grdctl rdp disable-view-only \
   && systemctl --user restart gnome-remote-desktop
 for i in 1 2 3 4 5 6 7 8; do
-  grdctl status 2>/dev/null | sed -n '/^RDP/,/^VNC/p' | grep -q 'Status: enabled' \
-    && systemctl --user is-active gnome-remote-desktop >/dev/null 2>&1 \
-    && echo RDP_UP && exit 0
+  P=$(LC_ALL=C ss -ltnp 2>/dev/null | sed -n 's/.*:\([0-9][0-9]*\) .*gnome-remote.*/\1/p' | head -1)
+  [ -n "$P" ] && echo RDP_UP && echo "RDP_PORT=$P" && exit 0
   sleep 1
 done
 echo RDP_FAIL
@@ -1032,7 +1035,8 @@ journalctl --user -u gnome-remote-desktop -n 5 --no-pager 2>/dev/null"#,
                         Ok(out) if out.contains("RDP_UP") => {
                             emit(&proxy2, json!({"ev":"toast",
                                 "text":"gnome-remote-desktop включён — подключаюсь"}));
-                            rdp_connect_flow(conn, proxy2, forwards2, sessions2, session_key, label).await;
+                            let port = rdp_port_of(&out);
+                            rdp_connect_flow(conn, proxy2, forwards2, sessions2, session_key, label, port).await;
                         }
                         Ok(out) => emit(&proxy2, json!({"ev":"toast","error":true,
                             "text":format!("RDP не поднялся: {}", last_lines(&out, 3))})),
@@ -1086,7 +1090,7 @@ journalctl --user -u gnome-remote-desktop -n 5 --no-pager 2>/dev/null"#,
                             return;
                         }
                     }
-                    match spawn_waypipe_app(&profile, &app) {
+                    match spawn_waypipe_app(&profile, &app, proxy2.clone()) {
                         Ok(()) => emit(&proxy2, json!({"ev":"toast",
                             "text":format!("Запускаю через waypipe: {app} — окно появится через несколько секунд")})),
                         Err(e) => emit(&proxy2, json!({"ev":"toast","error":true,
@@ -2058,8 +2062,18 @@ async fn vnc_desktop_flow(
     emit(&proxy, json!({"ev":"toast","text": text}));
 }
 
-/// Tunnel to the host's already-listening gnome-remote-desktop (RDP, :3389)
-/// and open a local RDP client.
+/// The port gnome-remote-desktop actually listens on, from the probe output.
+/// 3389 is only the default: port negotiation moves grd when 3389 is taken.
+fn rdp_port_of(probe_out: &str) -> u16 {
+    probe_out
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("RDP_PORT="))
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3389)
+}
+
+/// Tunnel to the host's already-listening gnome-remote-desktop (RDP) and open
+/// a local RDP client.
 async fn rdp_connect_flow(
     conn: Arc<dyn SshConnection>,
     proxy: EventLoopProxy<UserEvent>,
@@ -2067,9 +2081,10 @@ async fn rdp_connect_flow(
     sessions: Sessions,
     session_key: String,
     label: String,
+    remote_port: u16,
 ) {
     let Some(bound) =
-        register_desktop_forward(&conn, &proxy, &forwards, &sessions, session_key, label, 3389)
+        register_desktop_forward(&conn, &proxy, &forwards, &sessions, session_key, label, remote_port)
             .await
     else {
         return;
@@ -2126,8 +2141,16 @@ async fn register_desktop_forward(
 
 /// `waypipe ssh <chain> <app>` as a detached local process: waypipe proxies
 /// the Wayland protocol, so the remote app's window renders locally. Stored
-/// passwords ride the same askpass helper as the external terminal.
-fn spawn_waypipe_app(profile: &SessionProfile, app: &str) -> Result<(), String> {
+/// passwords ride the same askpass helper as the external terminal. A child
+/// dying within the first seconds surfaces its stderr as a toast — otherwise
+/// the only trace of a failed launch is a stray system notification.
+fn spawn_waypipe_app(
+    profile: &SessionProfile,
+    app: &str,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Result<(), String> {
+    use std::io::Read;
+
     let (mut ssh_argv, temp_keys) = build_ssh_argv(profile);
     ssh_argv.remove(0); // waypipe invokes ssh itself
     let creds = password_creds(profile);
@@ -2138,7 +2161,7 @@ fn spawn_waypipe_app(profile: &SessionProfile, app: &str) -> Result<(), String> 
         .arg(app)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     let mut cleanup = temp_keys;
     if !creds.is_empty() {
         if let Ok(path) = write_askpass_helper(&creds) {
@@ -2154,8 +2177,44 @@ fn spawn_waypipe_app(profile: &SessionProfile, app: &str) -> Result<(), String> 
         }
     });
     let mut child = spawned?;
+
+    // Bounded stderr tail, collected as it streams so the child never blocks
+    // on a full pipe.
+    let tail = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let mut err = child.stderr.take().expect("stderr piped");
+    let tail2 = tail.clone();
     std::thread::spawn(move || {
-        let _ = child.wait();
+        let mut chunk = [0u8; 1024];
+        while let Ok(n) = err.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            let mut t = tail2.lock().unwrap();
+            t.extend_from_slice(&chunk[..n]);
+            if t.len() > 8192 {
+                let cut = t.len() - 4096;
+                t.drain(..cut);
+            }
+        }
+    });
+
+    let app_name = app.to_string();
+    std::thread::spawn(move || {
+        for _ in 0..70 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        let text = String::from_utf8_lossy(&tail.lock().unwrap()).into_owned();
+                        emit(&proxy, json!({"ev":"toast","error":true,
+                            "text":format!("waypipe ({app_name}): {}", last_lines(&text, 3))}));
+                    }
+                    return;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                Err(_) => return,
+            }
+        }
+        let _ = child.wait(); // long-lived = the app is running; just reap it
     });
     Ok(())
 }
@@ -2266,6 +2325,11 @@ fi
 echo "TYPE=$TYPE"
 grdctl status 2>/dev/null | sed -n '/^RDP/,/^VNC/p' | grep -q 'Status: enabled' \
   && echo RDP=ON || echo RDP=OFF
+# The ACTUAL grd listening port: with "negotiate port" grd silently moves to
+# 3390+ when 3389 is taken (e.g. by xrdp — connecting there would open a
+# second broken session instead of the live desktop). grd runs as this user,
+# so ss shows its process name without root.
+LC_ALL=C ss -ltnp 2>/dev/null | sed -n 's/.*:\([0-9][0-9]*\) .*gnome-remote.*/RDP_PORT=\1/p' | head -1
 command -v x11vnc >/dev/null 2>&1 && echo X11VNC=OK || echo X11VNC=MISSING
 command -v wayvnc >/dev/null 2>&1 && echo WAYVNC=OK || echo WAYVNC=MISSING"#;
 
