@@ -1817,6 +1817,27 @@ pub(crate) fn build_ssh_argv(profile: &SessionProfile) -> (Vec<String>, Vec<std:
             argv.push(p);
         }
     }
+    // Pin ssh to the profile's auth method: a fat ssh-agent otherwise offers
+    // every key first and the server drops the connection with "Too many
+    // authentication failures" before the profile's key/password gets a turn.
+    // Command-line -o applies to the -J hops too, so only pin when the whole
+    // chain authenticates the same way.
+    let uniform = hops.iter().all(|h| {
+        std::mem::discriminant(&h.auth_method) == std::mem::discriminant(&target.auth_method)
+    });
+    if uniform {
+        match &target.auth_method {
+            AuthMethod::PublicKey { .. } => {
+                argv.push("-o".into());
+                argv.push("IdentitiesOnly=yes".into());
+            }
+            AuthMethod::Password => {
+                argv.push("-o".into());
+                argv.push("PreferredAuthentications=password,keyboard-interactive".into());
+            }
+            AuthMethod::Agent => {}
+        }
+    }
     argv.push(format!("{}@{}", target.username, target.address));
     (argv, temp_keys)
 }
