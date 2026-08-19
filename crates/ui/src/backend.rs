@@ -2176,7 +2176,12 @@ fn spawn_waypipe_app(
     ssh_argv.remove(0); // waypipe invokes ssh itself
     let creds = password_creds(profile);
     let mut cmd = Command::new("waypipe");
-    cmd.arg("ssh")
+    // --no-gpu: the DMABUF path segfaults inside the NVIDIA EGL driver
+    // (waypipe 0.11 + libnvidia-eglcore, seen live); shared memory works
+    // everywhere and costs nothing for ordinary apps. waypipe forwards this
+    // option to its remote server half itself.
+    cmd.arg("--no-gpu")
+        .arg("ssh")
         .args(["-o".to_string(), "StrictHostKeyChecking=accept-new".to_string()])
         .args(&ssh_argv)
         .arg(app)
