@@ -75,12 +75,15 @@ fn classify(code: Option<i32>, stderr: &str) -> Outcome {
         // how a dying transport can surface), 23/24 partial transfer,
         // 30/35 timeouts, 255 ssh transport death.
         Some(10 | 12 | 20 | 23 | 24 | 30 | 35 | 255) | None => Outcome::Retry,
-        Some(c) => Outcome::Fatal(format!("rsync (код {c}): {}", last_line(stderr))),
+        Some(c) => Outcome::Fatal(format!("rsync (код {c}): {}", cause_line(stderr))),
     }
 }
 
-fn last_line(s: &str) -> String {
-    s.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
+/// The line that explains a failure: ssh's own message (refused, no matching
+/// algorithm, hop chain) precedes rsync's "connection unexpectedly closed" /
+/// "unexplained error" summary; accept-new's "Warning: Permanently added" is noise.
+fn cause_line(s: &str) -> String {
+    s.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("Warning:")).unwrap_or("").to_string()
 }
 
 /// Parse an `--info=progress2` status line — `  1,234,567  42%  1.2MB/s  0:01:23`
@@ -287,6 +290,12 @@ impl Job {
                 Outcome::Success => return JobEnd::Done(best),
                 Outcome::Fallback(reason) => return JobEnd::Fallback(reason),
                 Outcome::Fatal(e) => return JobEnd::Error(e),
+                // ssh never got through (nothing received on any attempt): the
+                // external road is closed while the in-app session is alive —
+                // SFTP takes over, ssh's own message says why.
+                Outcome::Retry if code == Some(255) && best == 0 => {
+                    return JobEnd::Fallback(format!("внешний ssh: {}", cause_line(&stderr)))
+                }
                 Outcome::Retry => {
                     if best > before {
                         delay = RETRY_START_SECS; // data moved — back off gently again
@@ -296,7 +305,7 @@ impl Job {
                         if fruitless >= MAX_FRUITLESS_ATTEMPTS {
                             return JobEnd::Error(format!(
                                 "связь не восстановилась ({fruitless} попыток без прогресса): {}",
-                                last_line(&stderr)
+                                cause_line(&stderr)
                             ));
                         }
                     }
@@ -432,6 +441,15 @@ mod tests {
         );
         assert_eq!(parse_progress("sending incremental file list"), None);
         assert_eq!(parse_progress(""), None);
+    }
+
+    #[test]
+    fn cause_is_the_first_real_line() {
+        let e = "Warning: Permanently added 'h' (ED25519) to the list of known hosts.\r\n\
+                 Unable to negotiate with h port 22: no matching key exchange method found.\n\
+                 rsync: connection unexpectedly closed (0 bytes received so far) [Receiver]\n\
+                 rsync error: unexplained error (code 255) at io.c(232) [Receiver=3.4.1]\n";
+        assert_eq!(cause_line(e), "Unable to negotiate with h port 22: no matching key exchange method found.");
     }
 
     #[test]
