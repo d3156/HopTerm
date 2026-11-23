@@ -2340,7 +2340,7 @@ if [ "$TYPE" = NONE ]; then
 fi
 [ "$TYPE" = NONE ] && pgrep -u "$U" -x kwin_wayland >/dev/null 2>&1 && TYPE=WAYLAND_OTHER
 if [ "$TYPE" = NONE ]; then
-  for s in /tmp/.X11-unix/X*; do [ -O "$s" ] && TYPE=X11 && break; done
+  for s in /tmp/.X11-unix/X*; do [ -O "$s" ] && ss -xl | grep -qF " $s " && TYPE=X11 && break; done
 fi
 echo "TYPE=$TYPE"
 grdctl status 2>/dev/null | sed -n '/^RDP/,/^VNC/p' | grep -q 'Status: enabled' \
@@ -2381,7 +2381,7 @@ if [ -z "$D" ]; then
     [ -n "$D" ] && break
   done
 fi
-[ -n "$D" ] || for s in /tmp/.X11-unix/X*; do [ -O "$s" ] && D=":${{s##*/X}}" && break; done
+[ -n "$D" ] || for s in /tmp/.X11-unix/X*; do [ -O "$s" ] && ss -xl | grep -qF " $s " && D=":${{s##*/X}}" && break; done
 D=${{D:-:0}}
 [ -r "$XA" ] || XA=$(ps -u "$(id -u)" -o args= 2>/dev/null | sed -n 's/.* -auth \([^ ]*\).*/\1/p' | head -1)
 [ -r "$XA" ] || XA=/run/user/$(id -u)/gdm/Xauthority
