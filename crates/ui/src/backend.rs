@@ -306,7 +306,11 @@ pub async fn run(mut cmd_rx: mpsc::UnboundedReceiver<String>, proxy: EventLoopPr
                         spawn_connect(profile, manager.clone(), proxy.clone(), sessions.clone(), false, key, forwards.clone());
                     }
                 }
+                crate::update::spawn_check(proxy.clone(), false);
             }
+
+            "update_check" => crate::update::spawn_check(proxy.clone(), true),
+            "update_install" => crate::update::spawn_install(proxy.clone()),
 
             "connect" => {
                 // Lazy: already-open profile just switches, no reconnect.
@@ -2264,7 +2268,7 @@ fn local_tool_exists(bin: &str) -> bool {
         .is_ok()
 }
 
-fn last_lines(s: &str, n: usize) -> String {
+pub(crate) fn last_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join(" | ")
 }

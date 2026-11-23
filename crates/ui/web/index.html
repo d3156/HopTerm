@@ -1011,6 +1011,18 @@ input, textarea, select { font: inherit; color: inherit; background: none; }
             </div>
           </div>
         </div>
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="card-header"><span class="card-title">Обновления</span></div>
+          <div class="card-body">
+            <div class="toggle-row">
+              <div class="toggle-info">
+                <div class="toggle-label">Версия {{APP_VERSION}}</div>
+                <div class="toggle-desc">Новая версия ищется на GitHub при запуске</div>
+              </div>
+              <button class="btn btn-ghost btn-sm" onclick="send({ cmd:'update_check' })">Проверить обновления</button>
+            </div>
+          </div>
+        </div>
         <div class="card">
           <div class="card-header"><span class="card-title">Путь к конфигу</span></div>
           <div class="card-body">
@@ -2015,6 +2027,22 @@ function onDesktopSetup(e) {
       });
   }
 }
+function onUpdateAvailable(e) {
+  promptModal(`
+    <div class="modal-header"><span class="modal-title">Доступна версия v${esc(e.version)}</span></div>
+    <div class="modal-body">У вас v${esc(e.current)}. Скачать с GitHub и установить?
+      Система спросит пароль администратора. Открытые сессии не прервутся —
+      новая версия заработает после перезапуска HopTerm.</div>
+    <div class="modal-footer"><button class="btn btn-ghost" data-cancel>Позже</button>
+      <button class="btn btn-primary" data-ok>Обновить</button></div>`,
+    (back, cancel) => {
+      if (!cancel) {
+        send({ cmd:'update_install' });
+        showToast(`Скачиваю HopTerm v${e.version}...`);
+      }
+      back._close();
+    });
+}
 function addForward() {
   const sel = document.getElementById('fwd-session');
   const session = sel && sel.value;
@@ -2084,6 +2112,7 @@ window.hop = {
       case 'closed': { removeSession(e.id); refreshForwardsIfActive(); break; }   // shell exit / drop → close tab
       case 'forwards': { forwards = e.items || []; renderForwards(); break; }
       case 'desktop_setup': { onDesktopSetup(e); break; }
+      case 'update_available': { onUpdateAvailable(e); break; }
       case 'commands': { commands = e.items; renderCommands(); break; }
       case 'sftp': { if (e.key === sftpKey) renderSftp(e.path, e.entries); break; }
       case 'sftp_err': { const l = document.getElementById('sftp-list'); if (l) l.innerHTML = '<div style="padding:8px;color:var(--color-notification)">'+esc(e.error)+'</div>'; break; }

@@ -7,6 +7,7 @@
 
 mod backend;
 mod rsync;
+mod update;
 
 use std::borrow::Cow;
 
